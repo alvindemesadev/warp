@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+/* SF Pro stack — falls back gracefully */
+:root {
+  --font-sf: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+
+  /* macOS-like vibrancy tints */
+  --glass-bg: rgba(28, 28, 30, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-hover: rgba(255, 255, 255, 0.05);
+  --glass-active: rgba(255, 255, 255, 0.03);
+
+  /* System accent colors */
+  --accent: #0a84ff;       /* macOS Blue */
+  --accent-hover: #409cff;
+  --green: #30d158;
+  --red: #ff453a;
+  --yellow: #ffd60a;
+  --orange: #ff9f0a;
+
+  /* Surfaces */
+  --surface-0: #000000;
+  --surface-1: rgba(28, 28, 30, 0.85);
+  --surface-2: rgba(44, 44, 46, 0.60);
+  --surface-3: rgba(58, 58, 60, 0.50);
+
+  /* Text */
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.50);
+  --text-tertiary: rgba(255, 255, 255, 0.28);
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+@keyframes fadeUp {
+  0%   { opacity: 0; transform: translateY(8px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes popIn {
+  0%   { opacity: 0; transform: scale(0.92); }
+  60%  { transform: scale(1.02); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+@keyframes spin-smooth {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.animate-shimmer {
+  background-size: 300% auto;
+  animation: shimmer 2.5s linear infinite;
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.3s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+}
+
+.animate-pop-in {
+  animation: popIn 0.35s cubic-bezier(0.34, 1.4, 0.64, 1) forwards;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 1.8s ease-in-out infinite;
+}
+
+.animate-spin-smooth {
+  animation: spin-smooth 1.2s linear infinite;
+}

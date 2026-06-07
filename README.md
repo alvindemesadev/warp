@@ -1,5 +1,9 @@
 # Warp — High-Speed File Transfer
 
+<p align="center">
+  <img src="docs/warp-logo.jpg" width="100" alt="Warp logo" />
+</p>
+
 > A fast, minimal desktop app for copying, moving, and syncing files on Windows.
 
 Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving you real-time progress, live transfer speed, and per-transfer summaries without touching the command line.
@@ -8,9 +12,9 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 ## Screenshots
 
-> Drop a source folder, drop a destination, pick a mode, hit go.
-
-![Warp UI](docs/screenshot.png)
+<p align="center">
+  <img src="docs/screenshot.png" alt="Warp UI" width="480" />
+</p>
 
 ---
 

@@ -52,7 +52,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 ## Download
 
-Download the latest installer from the [Releases](../../releases) page:
+**[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website.
 
 ```
 Warp_1.0.0_x64-setup.exe    Windows installer (recommended)

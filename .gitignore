@@ -15,3 +15,6 @@ src-tauri/target/
 # Temp build script
 build.bat
 scripts/_build_tmp.bat
+
+# Landing site has its own repository (alvindemesadev/warp-site)
+warp-site/

@@ -132,6 +132,16 @@
     { value: 5,   label: "5 MB/s" },
   ];
 
+  // Custom speed limit (MB/s) — used when none of the presets are selected.
+  let customSpeed = $state(false);
+  let customSpeedValue = $state(50);
+
+  // Keep the speed selector in sync when a throttle value is loaded (preset/queue).
+  function syncSpeedMode(t: number) {
+    customSpeed = t > 0 && !THROTTLE_OPTIONS.some((o) => o.value === t);
+    if (customSpeed) customSpeedValue = t;
+  }
+
   const win = getCurrentWindow();
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -445,6 +455,7 @@
       conflict = job.conflict;
       folderMode = job.folderMode;
       throttle = job.throttle;
+      syncSpeedMode(job.throttle);
       verify = job.verify;
 
       isProcessing = true;
@@ -516,6 +527,7 @@
     conflict = p.conflict;
     folderMode = p.folderMode;
     throttle = p.throttle ?? 0;
+    syncSpeedMode(throttle);
     verify = p.verify ?? false;
     showPresets = false;
   }
@@ -1075,78 +1087,70 @@
       {MODES.find(m => m.id === mode)?.warning ?? MODES.find(m => m.id === mode)?.desc}
     </p>
 
-    <!-- #3: Conflict + folder mode options -->
-    {#if mode !== "move" || true}
-      <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;">
-        <!-- Folder mode toggle -->
-        <div style="display:flex;align-items:center;gap:6px;">
-          <p style="font-size:10px;color:var(--text-tertiary);margin:0;">Destination:</p>
-          {#each [
-            { id: "into",  label: "Inside folder", title: `Result: ${destPath && sourcePath ? basename(destPath) + '\\' + basename(sourcePath) + '\\' : 'dest\\source_name\\'}` },
-            { id: "merge", label: "Merge contents", title: `Result: ${destPath ? basename(destPath) + '\\' : 'dest\\'} (files go directly inside)` },
-          ] as opt}
-            <button
-              onclick={() => folderMode = opt.id as "into" | "merge"}
-              title={opt.title}
-              style="padding:3px 8px;border-radius:6px;font-size:10px;font-weight:600;border:none;cursor:pointer;transition:all 0.15s;
-                background:{folderMode===opt.id?'rgba(255,255,255,0.10)':'transparent'};
-                color:{folderMode===opt.id?'var(--text-primary)':'var(--text-tertiary)'};
-                border:1px solid {folderMode===opt.id?'rgba(255,255,255,0.12)':'transparent'};"
-            >{opt.label}</button>
-          {/each}
+    <!-- Transfer options -->
+    <div class="opts">
+      <!-- Primary: destination behavior + conflict -->
+      <div class="opts-row">
+        <div class="opt-group">
+          <span class="opt-label">Destination</span>
+          <div class="seg" role="group" aria-label="Destination behavior">
+            {#each [
+              { id: "into",  label: "Inside folder",  title: `Files land in: ${destPath && sourcePath ? basename(destPath) + '\\' + basename(sourcePath) + '\\' : 'destination\\source_name\\'}` },
+              { id: "merge", label: "Merge contents", title: `Files land directly in: ${destPath ? basename(destPath) + '\\' : 'destination\\'}` },
+            ] as opt}
+              <button class="seg-btn" class:on={folderMode===opt.id} title={opt.title}
+                onclick={() => folderMode = opt.id as "into" | "merge"}>{opt.label}</button>
+            {/each}
+          </div>
         </div>
 
-        <!-- Divider -->
         {#if mode !== "move"}
-          <div style="width:1px;height:14px;background:rgba(255,255,255,0.08);"></div>
-          <!-- Conflict option -->
-          <div style="display:flex;align-items:center;gap:6px;">
-            <p style="font-size:10px;color:var(--text-tertiary);margin:0;">Conflict:</p>
-            {#each [{id:'overwrite',label:'Overwrite'},{id:'skip',label:'Skip'}] as opt}
-              <button
-                onclick={() => conflict = opt.id as Conflict}
-                style="padding:3px 8px;border-radius:6px;font-size:10px;font-weight:600;border:none;cursor:pointer;transition:all 0.15s;
-                  background:{conflict===opt.id?'rgba(255,255,255,0.10)':'transparent'};
-                  color:{conflict===opt.id?'var(--text-primary)':'var(--text-tertiary)'};
-                  border:1px solid {conflict===opt.id?'rgba(255,255,255,0.12)':'transparent'};"
-              >{opt.label}</button>
-            {/each}
+          <div class="opt-group">
+            <span class="opt-label">If a file exists</span>
+            <div class="seg" role="group" aria-label="Conflict resolution">
+              {#each [
+                { id: "overwrite", label: "Overwrite", title: "Replace existing files in the destination" },
+                { id: "skip",      label: "Skip",      title: "Keep existing files; only copy new ones" },
+              ] as opt}
+                <button class="seg-btn" class:on={conflict===opt.id} title={opt.title}
+                  onclick={() => conflict = opt.id as Conflict}>{opt.label}</button>
+              {/each}
+            </div>
           </div>
         {/if}
       </div>
-    {/if}
 
-    <!-- Throttle + Verify options -->
-    <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;">
-      <!-- Bandwidth throttle -->
-      <div style="display:flex;align-items:center;gap:6px;">
-        <p style="font-size:10px;color:var(--text-tertiary);margin:0;">Speed:</p>
-        {#each THROTTLE_OPTIONS as opt}
-          <button
-            onclick={() => throttle = opt.value}
-            title={opt.value === 0 ? "No speed limit" : `Limit transfer to about ${opt.label}`}
-            style="padding:3px 8px;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;transition:all 0.15s;
-              background:{throttle===opt.value?'rgba(255,255,255,0.10)':'transparent'};
-              color:{throttle===opt.value?'var(--text-primary)':'var(--text-tertiary)'};
-              border:1px solid {throttle===opt.value?'rgba(255,255,255,0.12)':'transparent'};"
-          >{opt.label}</button>
-        {/each}
+      <!-- Secondary: speed limit + verify -->
+      <div class="opts-row opts-secondary">
+        <div class="opt-group">
+          <span class="opt-label">Max speed</span>
+          <div class="seg" role="group" aria-label="Maximum transfer speed">
+            {#each THROTTLE_OPTIONS as opt}
+              <button class="seg-btn" class:on={!customSpeed && throttle===opt.value}
+                title={opt.value === 0 ? "No speed limit — transfer at full speed" : `Cap the transfer at about ${opt.label}`}
+                onclick={() => { customSpeed = false; throttle = opt.value; }}>{opt.label}</button>
+            {/each}
+            <button class="seg-btn" class:on={customSpeed} title="Set your own speed limit"
+              onclick={() => { customSpeed = true; throttle = customSpeedValue > 0 ? customSpeedValue : 50; customSpeedValue = throttle; }}>Custom</button>
+            {#if customSpeed}
+              <input class="seg-input" type="number" min="1" max="100000" bind:value={customSpeedValue}
+                oninput={() => throttle = customSpeedValue > 0 ? customSpeedValue : 0}
+                aria-label="Custom speed limit in megabytes per second" />
+              <span class="seg-unit">MB/s</span>
+            {/if}
+          </div>
+        </div>
+
+        <div class="opt-group">
+          <span class="opt-label">Verify</span>
+          <div class="seg" role="group" aria-label="Verify after transfer">
+            <button class="seg-btn" class:on={!verify} title="No verification pass" onclick={() => verify = false}>Off</button>
+            <button class="seg-btn" class:on-green={verify}
+              title="After a copy/sync, re-compare source and destination to confirm every file arrived (size + timestamp check)"
+              onclick={() => verify = true}>On</button>
+          </div>
+        </div>
       </div>
-
-      <div style="width:1px;height:14px;background:rgba(255,255,255,0.08);"></div>
-
-      <!-- Verify toggle -->
-      <button
-        onclick={() => verify = !verify}
-        title="After a copy/sync, re-compare source and destination to confirm every file arrived (size + timestamp check)."
-        aria-pressed={verify}
-        style="display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:6px;border:1px solid {verify?'rgba(48,209,88,0.3)':'transparent'};background:{verify?'rgba(48,209,88,0.12)':'transparent'};cursor:pointer;transition:all 0.15s;"
-      >
-        <span style="width:13px;height:13px;border-radius:4px;border:1.5px solid {verify?'var(--green)':'rgba(255,255,255,0.25)'};background:{verify?'var(--green)':'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-          {#if verify}<svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4.5" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{/if}
-        </span>
-        <span style="font-size:10px;font-weight:600;color:{verify?'var(--green)':'var(--text-tertiary)'};">Verify after transfer</span>
-      </button>
     </div>
 
     <!-- Preset + Queue actions -->
@@ -1424,4 +1428,40 @@
   :global(::-webkit-scrollbar-track) { background: transparent; }
   :global(::-webkit-scrollbar-thumb) { background: rgba(255,255,255,0.12); border-radius: 4px; }
   :global(button:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Transfer options — segmented controls */
+  .opts { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+  .opts-row { display: flex; flex-wrap: wrap; gap: 10px 18px; justify-content: center; align-items: flex-start; }
+  .opts-secondary { opacity: 0.92; }
+  .opt-group { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+  .opt-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-tertiary); padding-left: 3px;
+  }
+  .seg {
+    display: inline-flex; align-items: center; gap: 2px; padding: 3px;
+    background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius: 9px;
+  }
+  .seg-btn {
+    padding: 4px 11px; border-radius: 7px; font-size: 11px; font-weight: 600;
+    border: none; background: transparent; color: var(--text-secondary);
+    cursor: pointer; transition: background 0.15s, color 0.15s;
+    font-family: var(--font-sf); white-space: nowrap;
+  }
+  .seg-btn:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
+  .seg-btn.on {
+    background: rgba(255,255,255,0.16); color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  }
+  .seg-btn.on-green {
+    background: rgba(48,209,88,0.2); color: var(--green);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  }
+  .seg-input {
+    width: 56px; padding: 4px 6px; margin-left: 2px; border-radius: 6px;
+    border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3);
+    color: var(--text-primary); font-size: 11px; font-family: var(--font-sf); outline: none;
+  }
+  .seg-input:focus { border-color: var(--accent); }
+  .seg-unit { font-size: 10px; color: var(--text-tertiary); padding: 0 4px; }
 </style>

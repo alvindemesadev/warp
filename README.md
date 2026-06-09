@@ -36,11 +36,17 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 | **Empty folder support** | Indeterminate progress bar for zero-byte transfers |
 | **Error surfacing** | Disk full, access denied, path errors shown clearly |
 | **Recent transfers** | Quick access to last 5 jobs (persisted across restarts) |
+| **Transfer queue** | Stack multiple jobs and run them back-to-back |
+| **Presets** | Save a source/destination/options combo and reload it in one click |
+| **Live file list** | See files scroll by as they transfer, not just the current one |
+| **ETA** | Estimated time remaining, from live throughput |
+| **Verify mode** | Optional post-transfer re-compare to confirm every file arrived |
+| **Bandwidth throttle** | Cap transfer speed (e.g. 5 / 25 / 100 MB/s) to leave headroom |
 | **System notifications** | Notified when a background transfer finishes |
 | **Keyboard shortcuts** | Enter, Esc, Ctrl+O, Ctrl+Shift+O |
 | **Sub-second duration** | Shows `0.3s` instead of `0s` |
 | **Version display** | App version shown in the UI |
-| **Resizable window** | Drag to resize up to 700×900 |
+| **Resizable window** | Drag to resize up to 800×1100 |
 
 ---
 
@@ -65,7 +71,26 @@ Warp_1.0.0_x64_en-US.msi   MSI installer
 2. **Drop** a destination folder onto the right zone (or click **browse**)
 3. Choose a **mode** — Copy, Move, or Sync
 4. Choose **destination behavior** — Inside folder or Merge contents
-5. Click **Copy / Move / Sync Files** or press **Enter**
+5. Optionally set **Speed** (bandwidth throttle) and toggle **Verify after transfer**
+6. Click **Copy / Move / Sync Files** or press **Enter**
+
+### Transfer queue
+
+Stack multiple jobs without waiting for each to finish:
+
+1. Set up a transfer as normal
+2. Click **+ Add to queue** — the form clears so you can set up the next job
+3. Repeat for as many jobs as you need
+4. Click **Run Queue** to process them all back-to-back
+5. A combined summary is shown when all jobs complete
+
+### Presets
+
+Save a frequently-used source/destination/options combination:
+
+1. Set up source, destination, mode, and options
+2. Click **Save preset** and give it a name
+3. Click **Presets** anytime to reload it in one click
 
 ### Transfer modes
 
@@ -112,7 +137,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsof
 ### Clone and build
 
 ```bash
-git clone https://github.com/your-username/warp
+git clone https://github.com/alvindemesadev/warp
 cd warp
 npm install
 node scripts/build.js
@@ -165,23 +190,32 @@ warp/
 │   ├── routes/+page.svelte     # Main UI (all in one component)
 │   └── app.css                 # Global styles + CSS variables
 ├── src-tauri/                  # Rust backend
-│   ├── src/lib.rs              # Tauri commands, robocopy wrapper, parser
+│   ├── src/lib.rs              # Tauri commands, robocopy wrapper, parser, tests
 │   ├── src/main.rs             # Entry point
 │   ├── Cargo.toml              # Rust dependencies
 │   ├── tauri.conf.json         # App config (window, bundle, permissions)
 │   └── capabilities/           # Tauri permission system
 ├── scripts/
-│   └── build.js                # Cross-platform build script (auto-finds vcvars64)
+│   └── build.js                # Build script (auto-finds vcvars64)
+├── .github/workflows/release.yml  # Tagged release builds (unsigned)
 └── README.md
 ```
 
 ### How progress works
 
 1. **Scan pass** — `robocopy /L` does a dry-run and counts total bytes
-2. **Transfer pass** — actual robocopy runs with `/BYTES /NP /MT:32`
+2. **Transfer pass** — actual robocopy runs with `/BYTES /NP /MT:32` (or single-threaded with `/IPG` when throttling)
 3. Each `New File` line in robocopy's output = one file completed
 4. Overall `%` = `bytes_done / total_bytes`
 5. Speed = bytes transferred in the last 400ms window
+6. ETA = remaining bytes / current speed
+
+### How verify works
+
+After a successful copy or sync, an optional second `robocopy /L` pass re-compares
+source and destination. Any file robocopy would still copy = a mismatch (missing or
+different size/timestamp). Zero mismatches = all files arrived intact. This is a
+structural check (existence + size + timestamp), not a byte-for-byte hash.
 
 ### How cancel works
 
@@ -194,7 +228,74 @@ The robocopy child process handle is stored in `Mutex<Option<Child>>` in Tauri's
 - **Windows only** — uses `robocopy` which is Windows-specific. macOS/Linux would need `rsync`.
 - **No admin elevation** — copying to protected directories (Program Files, System32) will fail with access denied.
 - **OneDrive virtual files** — files not yet downloaded locally will transfer as 0-byte placeholders.
-- **No transfer queue** — one transfer at a time.
+- **Verify is structural, not hash-based** — the verify pass confirms every file exists in the destination with a matching size and timestamp (a robocopy `/L` re-compare). It does not compute byte-for-byte checksums.
+- **Throttle is approximate** — bandwidth limiting uses robocopy's `/IPG` (inter-packet gap) and runs single-threaded, so the cap is a close approximation rather than an exact ceiling.
+- **English Windows assumed** — robocopy's per-file status words ("New File", "Same", "ERROR") are localized by Windows. On a non-English Windows install, live progress parsing may be less accurate. The transfer itself still completes correctly.
+
+---
+
+## Troubleshooting
+
+### "The installer doesn't do anything" / Windows protected your PC
+
+The installer is **not code-signed**, so Windows SmartScreen shows a blue
+"Windows protected your PC" dialog and appears to do nothing. This is expected
+for an unsigned app — it is not a broken installer.
+
+1. Click **More info**
+2. Click **Run anyway**
+
+If a security suite quarantines the file, restore it or add an exception. To
+remove SmartScreen entirely, the installer must be signed with a code-signing
+certificate (see Tauri's [Windows code signing guide](https://v2.tauri.app/distribute/sign/windows/)).
+
+### App installs but the window is blank or won't open
+
+Warp needs the **WebView2 runtime**. Windows 11 includes it; Windows 10 usually
+has it via Edge. This build embeds the WebView2 bootstrapper
+(`webviewInstallMode: embedBootstrapper`), so it installs automatically — but
+the bootstrapper still needs a brief internet connection the first time. If the
+machine is offline, install [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+manually, then relaunch Warp.
+
+### The app icon is wrong or missing in the taskbar
+
+After changing the icon and reinstalling, Windows often keeps the **old cached
+icon**. Force a refresh:
+
+```cmd
+ie4uinit.exe -show
+```
+
+If it still doesn't update, clear the icon cache and restart Explorer:
+
+```cmd
+taskkill /f /im explorer.exe
+del /a /q "%LocalAppData%\IconCache.db"
+del /a /q "%LocalAppData%\Microsoft\Windows\Explorer\iconcache*"
+start explorer.exe
+```
+
+The icon set is generated from `docs/warp-logo.png`. To regenerate after editing
+the logo, run `npm run tauri icon docs/warp-logo.png`, then rebuild.
+
+---
+
+## Releases (free, unsigned)
+
+Warp ships **unsigned** — there's no paid certificate involved. Pushing a version
+tag runs `.github/workflows/release.yml` (free on GitHub Actions), which builds
+the installers and publishes a draft GitHub Release:
+
+```bash
+git tag v1.0.0
+git push --tags
+```
+
+Because the build is unsigned, Windows SmartScreen shows a one-time "Windows
+protected your PC" prompt on download — users click **More info -> Run anyway**
+(see [Troubleshooting](#troubleshooting)). Removing that prompt entirely requires
+a paid code-signing certificate, which Warp intentionally does not use.
 
 ---
 

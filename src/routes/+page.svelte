@@ -19,6 +19,9 @@
     filesDone: number;
     filesTotal: number;
     indeterminate: boolean;
+    bytesPerSec: number;
+    bytesDone: number;
+    totalBytes: number;
   };
 
   type WarpSummary = {
@@ -31,6 +34,32 @@
     cancelled: boolean;
     errorCode: number;
     errorMessage: string;
+    verified: boolean;
+    verifyMismatches: number;
+  };
+
+  // A single queued transfer job.
+  type QueueJob = {
+    id: number;
+    source: string;
+    dest: string;
+    mode: Mode;
+    conflict: Conflict;
+    folderMode: "into" | "merge";
+    throttle: number;
+    verify: boolean;
+  };
+
+  // A saved, reusable transfer configuration.
+  type Preset = {
+    name: string;
+    source: string;
+    dest: string;
+    mode: Mode;
+    conflict: Conflict;
+    folderMode: "into" | "merge";
+    throttle: number;
+    verify: boolean;
   };
 
   type RecentEntry = {
@@ -51,12 +80,16 @@
   let mode       = $state<Mode>("copy");
   let conflict   = $state<Conflict>("overwrite");
   let folderMode = $state<"into" | "merge">("into"); // "into" = create subfolder, "merge" = copy contents directly
+  let throttle   = $state(0);          // target MB/s, 0 = unlimited
+  let verify     = $state(false);      // run a verification pass after transfer
 
   let progress    = $state(0);
   let currentFile = $state("");
   let speed       = $state("");
   let filesDone   = $state(0);
   let filesTotal  = $state(0);
+  let etaSeconds  = $state(0);                 // estimated time remaining
+  let transferredFiles = $state<string[]>([]); // live file list during transfer
 
   let isProcessing = $state(false);
   let isScanning   = $state(false);
@@ -66,7 +99,6 @@
 
   // Modals
   let showSyncWarning  = $state(false);
-  let showConflictOpts = $state(false);
 
   // Results
   let lastSummary = $state<WarpSummary | null>(null);
@@ -76,6 +108,26 @@
   let recentTransfers = $state<RecentEntry[]>([]);
   let showRecent = $state(false);
 
+  // Transfer queue
+  let queue = $state<QueueJob[]>([]);
+  let isQueueRunning = $state(false);
+  let queueIndex = $state(0);          // 1-based index of the job currently running
+  let queueTotal = $state(0);          // total jobs in the running batch
+  let queueResults = $state<WarpSummary[]>([]);
+  let showQueueSummary = $state(false);
+  let _jobId = 0;
+
+  // Presets
+  let presets = $state<Preset[]>([]);
+  let showPresets = $state(false);
+
+  const THROTTLE_OPTIONS = [
+    { value: 0,   label: "Unlimited" },
+    { value: 100, label: "100 MB/s" },
+    { value: 25,  label: "25 MB/s" },
+    { value: 5,   label: "5 MB/s" },
+  ];
+
   const win = getCurrentWindow();
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -84,6 +136,12 @@
     try {
       const saved = localStorage.getItem("warp-recent");
       if (saved) recentTransfers = JSON.parse(saved);
+    } catch {}
+
+    // Load saved presets
+    try {
+      const savedPresets = localStorage.getItem("warp-presets");
+      if (savedPresets) presets = JSON.parse(savedPresets);
     } catch {}
 
     const unlisten: Array<() => void> = [];
@@ -96,6 +154,19 @@
         filesDone  = payload.filesDone;
         filesTotal = payload.filesTotal;
         isIndeterminate = payload.indeterminate;
+
+        // Live file list (cap to keep memory/DOM small; newest first).
+        if (payload.currentFile) {
+          transferredFiles = [basename(payload.currentFile), ...transferredFiles].slice(0, 200);
+        }
+
+        // ETA from remaining bytes / current speed.
+        if (!payload.indeterminate && payload.bytesPerSec > 0 && payload.totalBytes > 0) {
+          const remaining = Math.max(0, payload.totalBytes - payload.bytesDone);
+          etaSeconds = Math.round(remaining / payload.bytesPerSec);
+        } else {
+          etaSeconds = 0;
+        }
       }));
 
       unlisten.push(await listen<string>("warp-error", ({ payload }) => {
@@ -159,7 +230,7 @@
   });
 
   // pending drop path when both slots are full
-  let _pendingDrop = "";
+  let _pendingDrop = $state("");
 
   function applyDropToPending(slot: "source" | "dest") {
     if (slot === "source") setSource(_pendingDrop);
@@ -230,6 +301,8 @@
     speed = "";
     filesDone = 0;
     filesTotal = 0;
+    etaSeconds = 0;
+    transferredFiles = [];
     currentFile = "Scanning…";
     lastSummary = null;
     errorLogs = [];
@@ -241,6 +314,8 @@
         mode,
         conflict,
         folderMode,
+        throttle,
+        verify,
       });
       lastSummary = s;
       if (!s.cancelled) {
@@ -287,11 +362,130 @@
     sourceInfo = destInfo = null;
     progress = 0; speed = ""; currentFile = "";
     filesDone = filesTotal = 0;
+    etaSeconds = 0; transferredFiles = [];
     isProcessing = false; isScanning = false;
     isIndeterminate = false;
     lastSummary = null; errorLogs = [];
     dragTarget = null; dropConflict = false;
     showSyncWarning = false;
+    showQueueSummary = false; queueResults = [];
+  }
+
+  // ── Transfer queue ───────────────────────────────────────────────────────────
+  function currentJobConfig(): Omit<QueueJob, "id"> {
+    return { source: sourcePath, dest: destPath, mode, conflict, folderMode, throttle, verify };
+  }
+
+  function addToQueue() {
+    if (!canStart) return;
+    queue = [...queue, { id: ++_jobId, ...currentJobConfig() }];
+    // Clear the form so the next job can be set up.
+    sourcePath = destPath = "";
+    sourceInfo = destInfo = null;
+  }
+
+  function removeFromQueue(id: number) {
+    queue = queue.filter((j) => j.id !== id);
+  }
+
+  function clearQueue() {
+    queue = [];
+  }
+
+  async function runQueue() {
+    if (isProcessing || isQueueRunning) return;
+
+    // Include the current form as a final job if it's a valid, ready transfer.
+    const jobs: QueueJob[] = [...queue];
+    if (canStart) jobs.push({ id: ++_jobId, ...currentJobConfig() });
+    if (jobs.length === 0) return;
+
+    isQueueRunning = true;
+    queueResults = [];
+    queueTotal = jobs.length;
+    lastSummary = null;
+    showQueueSummary = false;
+
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      queueIndex = i + 1;
+
+      // Reflect the running job in the UI.
+      sourcePath = job.source;
+      destPath = job.dest;
+      mode = job.mode;
+      conflict = job.conflict;
+      folderMode = job.folderMode;
+      throttle = job.throttle;
+      verify = job.verify;
+
+      isProcessing = true;
+      progress = 0; speed = ""; filesDone = 0; filesTotal = 0;
+      etaSeconds = 0; transferredFiles = []; currentFile = "Scanning…"; errorLogs = [];
+
+      try {
+        const s = await invoke<WarpSummary>("warp_file_op", {
+          source: job.source,
+          destination: job.dest,
+          mode: job.mode,
+          conflict: job.conflict,
+          folderMode: job.folderMode,
+          throttle: job.throttle,
+          verify: job.verify,
+        });
+        queueResults = [...queueResults, s];
+        if (!s.cancelled) {
+          saveRecent({
+            source: job.source, dest: job.dest, mode: job.mode,
+            transferred: s.transferred, bytes: s.bytesTransferred,
+            duration_ms: s.durationMs, timestamp: Date.now(),
+          });
+        } else {
+          // User cancelled — stop processing the rest of the queue.
+          isProcessing = false;
+          break;
+        }
+      } catch (err) {
+        currentFile = String(err);
+      }
+      isProcessing = false;
+    }
+
+    // Done — surface a combined summary.
+    queue = [];
+    queueIndex = 0;
+    isQueueRunning = false;
+    isIndeterminate = false;
+    progress = 100;
+    showQueueSummary = true;
+    notifyQueueDone();
+  }
+  function savePreset() {
+    if (!sourcePath || !destPath) return;
+    const name = (prompt("Name this preset:", `${basename(sourcePath)} → ${basename(destPath)}`) || "").trim();
+    if (!name) return;
+    const entry: Preset = { name, ...currentJobConfig() };
+    // Replace an existing preset with the same name, otherwise append.
+    const next = [...presets.filter((p) => p.name !== name), entry];
+    presets = next;
+    try { localStorage.setItem("warp-presets", JSON.stringify(next)); } catch {}
+  }
+
+  function loadPreset(p: Preset) {
+    setSource(p.source);
+    setDest(p.dest);
+    mode = p.mode;
+    conflict = p.conflict;
+    folderMode = p.folderMode;
+    throttle = p.throttle ?? 0;
+    verify = p.verify ?? false;
+    showPresets = false;
+  }
+
+  function deletePreset(name: string) {
+    const next = presets.filter((p) => p.name !== name);
+    presets = next;
+    try { localStorage.setItem("warp-presets", JSON.stringify(next)); } catch {}
   }
 
   // ── Recent transfers ───────────────────────────────────────────────────────
@@ -326,6 +520,20 @@
     } catch {}
   }
 
+  async function notifyQueueDone() {
+    try {
+      let granted = await isPermissionGranted();
+      if (!granted) granted = (await requestPermission()) === "granted";
+      if (granted) {
+        const files = queueResults.reduce((n, r) => n + r.transferred, 0);
+        sendNotification({
+          title: "Warp — Queue Complete",
+          body: `${queueResults.length} jobs · ${files.toLocaleString()} files transferred`,
+        });
+      }
+    } catch {}
+  }
+
   // ── Formatters ─────────────────────────────────────────────────────────────
   function basename(p: string) {
     return p.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? p;
@@ -348,6 +556,14 @@
     const s = ms / 1000;
     if (s < 60) return `${s.toFixed(1)}s`;
     return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+  }
+
+  // ETA — seconds remaining, rendered compactly.
+  function fmtEta(secs: number): string {
+    if (secs <= 0) return "";
+    if (secs < 60) return `${secs}s left`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s left`;
+    return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m left`;
   }
 
   function timeAgo(ts: number): string {
@@ -395,12 +611,13 @@
 
   const canStart      = $derived(
     !!sourcePath && !!destPath && !isProcessing &&
-    !sourceInfo?.isFile
+    !sourceInfo?.isFile && !destInfo?.isFile
   );
 
   const startLabel = $derived(
     !sourcePath || !destPath ? "Drop source and destination to begin"
     : sourceInfo?.isFile    ? "Source must be a folder, not a file"
+    : destInfo?.isFile      ? "Destination must be a folder, not a file"
     : `${MODES.find(m => m.id === mode)?.label} Files`
   );
 </script>
@@ -449,13 +666,16 @@
 <!-- ── Sync warning modal (#5) ────────────────────────────────────────────── -->
 {#if showSyncWarning}
   <div
-    style="position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;padding:24px;"
-    onclick={() => showSyncWarning = false}
-    role="dialog" aria-modal="true"
+    style="position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:24px;"
+    role="dialog" aria-modal="true" aria-label="Sync will delete files" tabindex="-1"
   >
+    <button
+      type="button" aria-label="Dismiss"
+      onclick={() => showSyncWarning = false}
+      style="position:fixed;inset:0;border:none;padding:0;margin:0;background:rgba(0,0,0,0.65);cursor:default;"
+    ></button>
     <div
-      style="background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:24px;max-width:340px;width:100%;"
-      onclick={(e) => e.stopPropagation()}
+      style="position:relative;background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:24px;max-width:340px;width:100%;"
     >
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
         <div style="width:38px;height:38px;border-radius:10px;background:rgba(255,69,58,0.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
@@ -493,13 +713,16 @@
 <!-- ── Drop conflict modal (#11) ──────────────────────────────────────────── -->
 {#if dropConflict}
   <div
-    style="position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;padding:24px;"
-    onclick={() => { dropConflict=false; _pendingDrop=""; }}
-    role="dialog" aria-modal="true"
+    style="position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:24px;"
+    role="dialog" aria-modal="true" aria-label="Replace which slot?" tabindex="-1"
   >
+    <button
+      type="button" aria-label="Dismiss"
+      onclick={() => { dropConflict=false; _pendingDrop=""; }}
+      style="position:fixed;inset:0;border:none;padding:0;margin:0;background:rgba(0,0,0,0.65);cursor:default;"
+    ></button>
     <div
-      style="background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:22px;max-width:320px;width:100%;"
-      onclick={(e) => e.stopPropagation()}
+      style="position:relative;background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:22px;max-width:320px;width:100%;"
     >
       <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 6px;">Replace which slot?</p>
       <p style="font-size:11px;color:var(--text-tertiary);margin:0 0 16px;">{basename(_pendingDrop)}</p>
@@ -520,13 +743,16 @@
 <!-- ── Recent transfers panel (#26) ───────────────────────────────────────── -->
 {#if showRecent}
   <div
-    style="position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.5);"
-    onclick={() => showRecent=false}
-    role="dialog" aria-modal="true"
+    style="position:fixed;inset:0;z-index:100;"
+    role="dialog" aria-modal="true" aria-label="Recent transfers" tabindex="-1"
   >
+    <button
+      type="button" aria-label="Dismiss"
+      onclick={() => showRecent=false}
+      style="position:fixed;inset:0;border:none;padding:0;margin:0;background:rgba(0,0,0,0.5);cursor:default;"
+    ></button>
     <div
       style="position:absolute;top:36px;right:8px;width:300px;background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:14px;overflow:hidden;"
-      onclick={(e) => e.stopPropagation()}
     >
       <div style="padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.07);display:flex;align-items:center;justify-content:space-between;">
         <p style="font-size:11px;font-weight:700;color:var(--text-tertiary);letter-spacing:0.06em;text-transform:uppercase;margin:0;">Recent</p>
@@ -547,6 +773,44 @@
           <span style="font-size:10px;color:var(--text-tertiary);">{r.mode} · {fmtBytes(r.bytes)} · {fmtDuration(r.duration_ms)}</span>
         </button>
       {/each}
+    </div>
+  </div>
+{/if}
+
+<!-- ── Presets panel ──────────────────────────────────────────────────────── -->
+{#if showPresets}
+  <div
+    style="position:fixed;inset:0;z-index:100;"
+    role="dialog" aria-modal="true" aria-label="Presets" tabindex="-1"
+  >
+    <button
+      type="button" aria-label="Dismiss"
+      onclick={() => showPresets = false}
+      style="position:fixed;inset:0;border:none;padding:0;margin:0;background:rgba(0,0,0,0.5);cursor:default;"
+    ></button>
+    <div
+      style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:320px;max-height:70vh;overflow-y:auto;background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:14px;"
+    >
+      <div style="padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.07);">
+        <p style="font-size:11px;font-weight:700;color:var(--text-tertiary);letter-spacing:0.06em;text-transform:uppercase;margin:0;">Presets</p>
+      </div>
+      {#if presets.length === 0}
+        <p style="font-size:11px;color:var(--text-tertiary);padding:16px 14px;margin:0;text-align:center;">No presets yet. Set up a transfer and click "Save preset".</p>
+      {:else}
+        {#each presets as p}
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.05);">
+            <button
+              onclick={() => loadPreset(p)}
+              style="flex:1;min-width:0;text-align:left;background:transparent;border:none;cursor:pointer;padding:0;font-family:var(--font-sf);"
+            >
+              <span style="display:block;font-size:12px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{p.name}</span>
+              <span style="display:block;font-size:10px;color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{basename(p.source)} → {basename(p.dest)} · {p.mode}{p.verify ? ' · verify' : ''}{p.throttle ? ` · ${p.throttle} MB/s` : ''}</span>
+            </button>
+            <button onclick={() => deletePreset(p.name)} aria-label="Delete preset"
+              style="font-size:10px;color:var(--red);background:none;border:none;cursor:pointer;flex-shrink:0;font-family:var(--font-sf);">Delete</button>
+          </div>
+        {/each}
+      {/if}
     </div>
   </div>
 {/if}
@@ -572,7 +836,56 @@
       </p>
     </div>
 
-    {#if !lastSummary}
+    {#if showQueueSummary}
+      <!-- ── Queue summary ─────────────────────────────────────────────── -->
+      <div class="animate-fade-up" style="display:flex;flex-direction:column;gap:11px;">
+        <div style="background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(48px) saturate(180%);border-radius:16px;overflow:hidden;">
+          <div style="padding:15px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--glass-border);">
+            <div style="width:38px;height:38px;border-radius:11px;flex-shrink:0;background:rgba(48,209,88,0.14);display:flex;align-items:center;justify-content:center;">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M5.5 10.5l3 3 6-6.5" stroke="#30d158" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div style="flex:1;min-width:0;">
+              <p style="font-size:15px;font-weight:600;color:var(--text-primary);margin:0;letter-spacing:-0.01em;">Queue complete</p>
+              <p style="font-size:11px;color:var(--text-tertiary);margin:3px 0 0;">
+                {queueResults.length} {queueResults.length === 1 ? "job" : "jobs"} ·
+                {queueResults.reduce((n, r) => n + r.transferred, 0).toLocaleString()} files ·
+                {fmtBytes(queueResults.reduce((n, r) => n + r.bytesTransferred, 0))}
+              </p>
+            </div>
+          </div>
+          <div style="max-height:220px;overflow-y:auto;">
+            {#each queueResults as r, i}
+              <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;{i < queueResults.length - 1 ? 'border-bottom:1px solid var(--glass-border);' : ''}">
+                <div style="width:20px;height:20px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:{r.cancelled?'rgba(255,159,10,0.14)':r.failed>0?'rgba(255,69,58,0.14)':'rgba(48,209,88,0.14)'};">
+                  {#if r.cancelled}
+                    <svg width="11" height="11" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="#ff9f0a" stroke-width="2" stroke-linecap="round"/></svg>
+                  {:else if r.failed > 0}
+                    <svg width="11" height="11" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="#ff453a" stroke-width="1.8"/></svg>
+                  {:else}
+                    <svg width="11" height="11" viewBox="0 0 20 20" fill="none"><path d="M5.5 10.5l3 3 6-6.5" stroke="#30d158" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  {/if}
+                </div>
+                <div style="flex:1;min-width:0;">
+                  <p style="font-size:11px;color:var(--text-secondary);margin:0;">{r.transferred.toLocaleString()} transferred · {fmtBytes(r.bytesTransferred)} · {fmtDuration(r.durationMs)}</p>
+                  {#if r.verified}
+                    <p style="font-size:9px;margin:1px 0 0;color:{r.verifyMismatches === 0 ? 'var(--green)' : 'var(--orange)'};">{r.verifyMismatches === 0 ? "✓ Verified" : `⚠ ${r.verifyMismatches} mismatch${r.verifyMismatches === 1 ? '' : 'es'}`}</p>
+                  {/if}
+                  {#if r.errorMessage}
+                    <p style="font-size:9px;margin:1px 0 0;color:var(--red);">{r.errorMessage}</p>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+        <button onclick={reset}
+          style="width:100%;padding:12px;border-radius:14px;border:none;font-size:14px;font-weight:600;background:var(--accent);color:white;box-shadow:0 2px 20px rgba(10,132,255,0.28);cursor:pointer;transition:all 0.15s;outline:none;"
+          onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--accent-hover)'}
+          onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.background='var(--accent)'}
+        >Done</button>
+      </div>
+
+    {:else if !lastSummary}
 
     <!-- Source + Dest card -->
     <div style="background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(48px) saturate(180%);border-radius:16px;overflow:visible;position:relative;">
@@ -643,9 +956,11 @@
 
       <!-- Dest row -->
       <div style="display:flex;align-items:center;gap:12px;padding:13px 14px;background:{dragTarget==='dest'?'rgba(10,132,255,0.08)':'transparent'};transition:background 0.15s;border-radius:0 0 16px 16px;">
-        <div style="width:34px;height:34px;border-radius:9px;background:{destPath?'rgba(48,209,88,0.15)':'rgba(255,255,255,0.06)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <div style="width:34px;height:34px;border-radius:9px;background:{destPath?(destInfo?.isFile?'rgba(255,69,58,0.15)':'rgba(48,209,88,0.15)'):'rgba(255,255,255,0.06)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
           <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
-            {#if destPath}
+            {#if destPath && destInfo?.isFile}
+              <path d="M5 3h7l4 4v10a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="#ff453a" stroke-width="1.4" fill="none"/>
+            {:else if destPath}
               <path d="M2 6.5A2.5 2.5 0 014.5 4H8l1.5 2h6A2.5 2.5 0 0118 8.5v5A2.5 2.5 0 0115.5 16h-11A2.5 2.5 0 012 13.5V6.5Z" fill="#30d158"/>
             {:else}
               <path d="M2 6.5A2.5 2.5 0 014.5 4H8l1.5 2h6A2.5 2.5 0 0118 8.5v5A2.5 2.5 0 0115.5 16h-11A2.5 2.5 0 012 13.5V6.5Z" stroke="rgba(255,255,255,0.2)" stroke-width="1.4" fill="none"/>
@@ -655,9 +970,10 @@
         <div style="flex:1;min-width:0;">
           <p style="font-size:9px;font-weight:700;color:var(--text-tertiary);letter-spacing:0.07em;text-transform:uppercase;margin:0 0 2px;">Destination</p>
           {#if destPath}
-            <p style="font-size:13px;font-weight:500;color:var(--text-primary);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title={destPath}>{basename(destPath)}</p>
-            <p style="font-size:10px;color:var(--text-tertiary);margin:1px 0 0;">
-              {#if destInfo && destInfo.files > 0}{fmtFiles(destInfo.files)} · {fmtBytes(destInfo.bytes)} already here
+            <p style="font-size:13px;font-weight:500;color:{destInfo?.isFile?'var(--red)':'var(--text-primary)'};margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title={destPath}>{basename(destPath)}</p>
+            <p style="font-size:10px;color:var(--text-tertiary);margin:1px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              {#if destInfo?.isFile}<span style="color:var(--red);">Drop a folder, not a file</span>
+              {:else if destInfo && destInfo.files > 0}{fmtFiles(destInfo.files)} · {fmtBytes(destInfo.bytes)} already here
               {:else if destInfo}Empty folder
               {:else}{destPath}{/if}
             </p>
@@ -745,6 +1061,84 @@
       </div>
     {/if}
 
+    <!-- Throttle + Verify options -->
+    <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;">
+      <!-- Bandwidth throttle -->
+      <div style="display:flex;align-items:center;gap:6px;">
+        <p style="font-size:10px;color:var(--text-tertiary);margin:0;">Speed:</p>
+        {#each THROTTLE_OPTIONS as opt}
+          <button
+            onclick={() => throttle = opt.value}
+            title={opt.value === 0 ? "No speed limit" : `Limit transfer to about ${opt.label}`}
+            style="padding:3px 8px;border-radius:6px;font-size:10px;font-weight:600;cursor:pointer;transition:all 0.15s;
+              background:{throttle===opt.value?'rgba(255,255,255,0.10)':'transparent'};
+              color:{throttle===opt.value?'var(--text-primary)':'var(--text-tertiary)'};
+              border:1px solid {throttle===opt.value?'rgba(255,255,255,0.12)':'transparent'};"
+          >{opt.label}</button>
+        {/each}
+      </div>
+
+      <div style="width:1px;height:14px;background:rgba(255,255,255,0.08);"></div>
+
+      <!-- Verify toggle -->
+      <button
+        onclick={() => verify = !verify}
+        title="After a copy/sync, re-compare source and destination to confirm every file arrived (size + timestamp check)."
+        aria-pressed={verify}
+        style="display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:6px;border:1px solid {verify?'rgba(48,209,88,0.3)':'transparent'};background:{verify?'rgba(48,209,88,0.12)':'transparent'};cursor:pointer;transition:all 0.15s;"
+      >
+        <span style="width:13px;height:13px;border-radius:4px;border:1.5px solid {verify?'var(--green)':'rgba(255,255,255,0.25)'};background:{verify?'var(--green)':'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+          {#if verify}<svg width="9" height="9" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4.5" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{/if}
+        </span>
+        <span style="font-size:10px;font-weight:600;color:{verify?'var(--green)':'var(--text-tertiary)'};">Verify after transfer</span>
+      </button>
+    </div>
+
+    <!-- Preset + Queue actions -->
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">
+      <button
+        onclick={savePreset}
+        disabled={!sourcePath || !destPath}
+        title="Save the current source, destination, and options as a reusable preset"
+        style="padding:4px 10px;border-radius:7px;font-size:10px;font-weight:600;border:1px solid var(--glass-border);background:rgba(255,255,255,0.04);color:{sourcePath&&destPath?'var(--text-secondary)':'var(--text-tertiary)'};cursor:{sourcePath&&destPath?'pointer':'not-allowed'};font-family:var(--font-sf);"
+      >Save preset</button>
+      {#if presets.length > 0}
+        <button
+          onclick={() => showPresets = true}
+          style="padding:4px 10px;border-radius:7px;font-size:10px;font-weight:600;border:1px solid var(--glass-border);background:rgba(255,255,255,0.04);color:var(--text-secondary);cursor:pointer;font-family:var(--font-sf);"
+        >Presets ({presets.length})</button>
+      {/if}
+      <button
+        onclick={addToQueue}
+        disabled={!canStart}
+        title="Add this transfer to the queue and clear the form for the next one"
+        style="padding:4px 10px;border-radius:7px;font-size:10px;font-weight:600;border:1px solid {canStart?'rgba(10,132,255,0.3)':'var(--glass-border)'};background:{canStart?'rgba(10,132,255,0.1)':'rgba(255,255,255,0.04)'};color:{canStart?'var(--accent)':'var(--text-tertiary)'};cursor:{canStart?'pointer':'not-allowed'};font-family:var(--font-sf);"
+      >+ Add to queue</button>
+    </div>
+
+    <!-- Queue list -->
+    {#if queue.length > 0}
+      <div style="background:var(--surface-2);border:1px solid var(--glass-border);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:4px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 4px;">
+          <p style="font-size:10px;font-weight:700;color:var(--text-tertiary);letter-spacing:0.06em;text-transform:uppercase;margin:0;">Queue · {queue.length}</p>
+          <button onclick={clearQueue} style="font-size:10px;color:var(--red);background:none;border:none;cursor:pointer;font-family:var(--font-sf);">Clear</button>
+        </div>
+        {#each queue as job, i}
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:8px;">
+            <span style="font-size:10px;color:var(--text-tertiary);flex-shrink:0;width:16px;font-variant-numeric:tabular-nums;">{i + 1}</span>
+            <div style="flex:1;min-width:0;">
+              <p style="font-size:11px;color:var(--text-secondary);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{basename(job.source)} → {basename(job.dest)}</p>
+              <p style="font-size:9px;color:var(--text-tertiary);margin:1px 0 0;">{job.mode}{job.verify ? ' · verify' : ''}{job.throttle ? ` · ${job.throttle} MB/s` : ''}</p>
+            </div>
+            <button onclick={() => removeFromQueue(job.id)} aria-label="Remove from queue"
+              style="width:16px;height:16px;border-radius:50%;background:rgba(255,255,255,0.08);border:none;padding:0;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;opacity:0.6;">
+              <svg width="6" height="6" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
     <!-- Cross-drive move warning -->
     {#if crossDriveMove}
       <div style="background:rgba(255,159,10,0.08);border:1px solid rgba(255,159,10,0.2);border-radius:10px;padding:8px 12px;">
@@ -769,6 +1163,12 @@
     <!-- Progress / Engage -->
     {#if isProcessing}
       <div style="background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(40px);border-radius:14px;padding:13px 15px;display:flex;flex-direction:column;gap:9px;">
+        {#if isQueueRunning}
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:9px;font-weight:700;color:var(--accent);letter-spacing:0.06em;text-transform:uppercase;">Job {queueIndex} of {queueTotal}</span>
+            <span style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%;">{basename(sourcePath)} → {basename(destPath)}</span>
+          </div>
+        {/if}
         <!-- Top: spinner + file + speed -->
         <div style="display:flex;align-items:center;gap:9px;">
           <div class="animate-spin-smooth" style="width:14px;height:14px;border-radius:50%;flex-shrink:0;border:2px solid rgba(10,132,255,0.22);border-top-color:var(--accent);"></div>
@@ -784,10 +1184,11 @@
             <div class="animate-shimmer" style="height:100%;width:{progress}%;background:linear-gradient(90deg,var(--accent),#5e5ce6,var(--accent));border-radius:100px;transition:width 0.4s cubic-bezier(0.4,0,0.2,1);"></div>
           {/if}
         </div>
-        <!-- Bottom: file count + overall % + cancel (#1) -->
+        <!-- Bottom: file count + ETA + overall % + cancel (#1) -->
         <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:10px;color:var(--text-tertiary);">
+          <span style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             {filesTotal > 0 ? `${filesDone.toLocaleString()} / ${filesTotal.toLocaleString()} files` : `${basename(sourcePath)} → ${basename(destPath)}`}
+            {#if etaSeconds > 0}<span style="opacity:0.7;"> · {fmtEta(etaSeconds)}</span>{/if}
           </span>
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:10px;color:var(--text-tertiary);font-variant-numeric:tabular-nums;">{progress}%</span>
@@ -799,7 +1200,27 @@
             >CANCEL</button>
           </div>
         </div>
+
+        <!-- Live file list -->
+        {#if transferredFiles.length > 0}
+          <div style="border-top:1px solid var(--glass-border);padding-top:8px;margin-top:1px;">
+            <p style="font-size:9px;font-weight:700;color:var(--text-tertiary);letter-spacing:0.06em;text-transform:uppercase;margin:0 0 5px;">Transferring files</p>
+            <div style="max-height:120px;overflow-y:auto;display:flex;flex-direction:column;gap:1px;">
+              {#each transferredFiles.slice(0, 60) as f}
+                <p style="font-size:10px;font-family:monospace;color:var(--text-tertiary);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{f}</p>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
+
+    {:else if queue.length > 0}
+      <button
+        onclick={runQueue}
+        style="width:100%;padding:12px;border-radius:14px;border:none;font-size:14px;font-weight:600;letter-spacing:-0.01em;transition:all 0.15s;outline:none;cursor:pointer;background:var(--accent);color:#fff;box-shadow:0 2px 20px rgba(10,132,255,0.28);"
+        onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--accent-hover)'}
+        onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.background='var(--accent)'}
+      >Run Queue ({queue.length}{canStart ? ' + current' : ''} {queue.length + (canStart ? 1 : 0) === 1 ? 'job' : 'jobs'})</button>
 
     {:else}
       <button
@@ -860,6 +1281,11 @@
                 {fmtDuration(lastSummary!.durationMs)} · {MODES.find(m=>m.id===mode)?.label}
                 {#if lastSummary!.bytesTransferred > 0} · {fmtBytes(lastSummary!.bytesTransferred)}{/if}
               </p>
+              {#if lastSummary!.verified}
+                <p style="font-size:10px;font-weight:600;margin:4px 0 0;color:{lastSummary!.verifyMismatches === 0 ? 'var(--green)' : 'var(--orange)'};">
+                  {lastSummary!.verifyMismatches === 0 ? "✓ Verified — all files match" : `⚠ Verified — ${lastSummary!.verifyMismatches} file${lastSummary!.verifyMismatches === 1 ? '' : 's'} differ`}
+                </p>
+              {/if}
             </div>
           </div>
 

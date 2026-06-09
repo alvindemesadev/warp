@@ -23,6 +23,9 @@ pub struct WarpProgress {
     pub files_done: u32,
     pub files_total: u32,
     pub indeterminate: bool,
+    pub bytes_per_sec: u64,
+    pub bytes_done: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -37,6 +40,8 @@ pub struct WarpSummary {
     pub cancelled: bool,
     pub error_code: i32,
     pub error_message: String,
+    pub verified: bool,
+    pub verify_mismatches: u32,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -107,6 +112,43 @@ fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
     }
 }
 
+/// Recursively remove empty directories starting from `dir`, bottom-up.
+/// A directory is removed only if it ends up empty after its empty children
+/// are removed. Any directory that still contains files is left untouched.
+/// This is used after a `/MOVE` to clean up leftover empty folders WITHOUT
+/// risking deletion of files that were skipped and intentionally left behind.
+fn remove_empty_dirs(dir: &std::path::Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+
+    let mut is_empty = true;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Recurse first; if the child couldn't be fully removed,
+                // this directory is not empty either.
+                if !remove_empty_dirs(&path) {
+                    is_empty = false;
+                }
+            } else {
+                // A file remains — never delete this directory.
+                is_empty = false;
+            }
+        }
+    } else {
+        // Couldn't read the directory; don't attempt to remove it.
+        return false;
+    }
+
+    if is_empty {
+        std::fs::remove_dir(dir).is_ok()
+    } else {
+        false
+    }
+}
+
 // ── Cancel ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -133,6 +175,18 @@ fn fmt_speed(bps: u64) -> String {
     else if bps >= 1_048_576 { format!("{:.0} MB/s", bps as f64 / 1_048_576.0) }
     else if bps >= 1_024     { format!("{:.0} KB/s", bps as f64 / 1_024.0) }
     else                     { format!("{} B/s", bps) }
+}
+
+/// Convert a target throughput (MB/s) into robocopy's `/IPG` inter-packet gap
+/// in milliseconds. Robocopy moves data in 64 KB blocks, so blocks/sec = MB/s * 16
+/// and the gap between blocks is 1000 / (MB/s * 16) = 62.5 / MB/s ms (min 1).
+/// Returns None for 0 (unlimited).
+fn ipg_for_throttle(mb_per_sec: u32) -> Option<u64> {
+    if mb_per_sec == 0 {
+        None
+    } else {
+        Some(((62.5 / mb_per_sec as f64).round() as u64).max(1))
+    }
 }
 
 fn basename(path: &str) -> String {
@@ -240,6 +294,35 @@ fn scan(source: &str, destination: &str) -> (u64, u32) {
     (total_bytes, total_files)
 }
 
+// ── Verify pass ───────────────────────────────────────────────────────────────
+//
+// Robocopy has no content-hash verification, so "verify" re-runs a list-only
+// (/L) comparison of source vs destination and counts how many files robocopy
+// would still copy. After a clean copy that count should be zero — every file
+// is present in the destination with a matching size and timestamp. Any non-zero
+// result means a file is missing or differs (a size/timestamp mismatch).
+//
+// This is a structural verification (existence + size + time), not a byte-for-byte
+// hash check.
+fn verify_transfer(source: &str, destination: &str) -> u32 {
+    let out = match robocopy_cmd()
+        .args([source, destination, "/L", "/E", "/BYTES", "/NJH", "/NJS", "/NP"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return 0,
+    };
+
+    let mut mismatches = 0u32;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        // A file robocopy would still copy = not identical in the destination.
+        if let RoboLine::FileHeader { is_same: false, is_error: false, .. } = parse_line(line) {
+            mismatches += 1;
+        }
+    }
+    mismatches
+}
+
 // ── Main transfer command ─────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -251,6 +334,8 @@ async fn warp_file_op(
     mode: String,
     conflict: String,
     folder_mode: String, // "into" | "merge"
+    throttle: u32,       // target MB/s, 0 = unlimited
+    verify: bool,        // run a verification pass after a successful transfer
 ) -> Result<WarpSummary, String> {
 
     // ── Destination path resolution ───────────────────────────────────────────
@@ -308,7 +393,6 @@ async fn warp_file_op(
 
     args.extend([
         "/E".to_string(),
-        "/MT:32".to_string(),
         "/NP".to_string(),
         "/R:3".to_string(),
         "/W:5".to_string(),
@@ -317,6 +401,16 @@ async fn warp_file_op(
         "/NJS".to_string(),
         "/256".to_string(), // support paths longer than 260 chars (fix #3)
     ]);
+
+    // Bandwidth throttle via inter-packet gap (/IPG). Robocopy moves data in
+    // 64 KB blocks; an N ms gap between blocks caps throughput. /IPG is applied
+    // per thread, so disable multithreading when throttling to keep the cap
+    // accurate; otherwise use 32 threads for maximum speed.
+    if let Some(ipg) = ipg_for_throttle(throttle) {
+        args.push(format!("/IPG:{ipg}"));
+    } else {
+        args.push("/MT:32".to_string());
+    }
 
     // Spawn
     let mut child = robocopy_cmd()
@@ -336,11 +430,13 @@ async fn warp_file_op(
         total_files: 0, transferred: 0, skipped: 0, failed: 0,
         duration_ms: 0, bytes_transferred: 0, cancelled: false,
         error_code: 0, error_message: String::new(),
+        verified: false, verify_mismatches: 0,
     };
 
     let mut bytes_done: u64 = 0;
     let mut last_emitted: u32 = 0;
     let mut last_speed_str = String::new();
+    let mut last_bps: u64 = 0;
     let mut files_done_count: u32 = 0;
 
     // Live speed tracking
@@ -381,7 +477,7 @@ async fn warp_file_op(
                     let window_ms = speed_window_start.elapsed().as_millis() as u64;
                     if window_ms >= 400 {
                         let bps = (speed_window_bytes as f64 / window_ms as f64 * 1000.0) as u64;
-                        if bps > 0 { last_speed_str = fmt_speed(bps); }
+                        if bps > 0 { last_speed_str = fmt_speed(bps); last_bps = bps; }
                         speed_window_bytes = 0;
                         speed_window_start = Instant::now();
                     }
@@ -403,6 +499,9 @@ async fn warp_file_op(
                             files_done: files_done_count,
                             files_total: total_files_scan,
                             indeterminate,
+                            bytes_per_sec: last_bps,
+                            bytes_done,
+                            total_bytes,
                         });
                     }
                 }
@@ -439,11 +538,25 @@ async fn warp_file_op(
     if summary.cancelled { return Ok(summary); }
 
     if code < 8 {
-        // For move mode: robocopy /MOVE removes files but may leave empty
-        // source directories behind. Clean them up.
-        if mode == "move" && summary.failed == 0 {
-            let _ = std::fs::remove_dir_all(&source);
+        // For move mode: robocopy /MOVE removes the files it moves but leaves
+        // empty source directories behind. Clean up ONLY empty directories.
+        //
+        // IMPORTANT: We must never blindly `remove_dir_all(&source)` here. In
+        // skip-conflict mode (/XO /XN) some files are intentionally NOT moved
+        // and remain in the source. A recursive delete would destroy those
+        // files (data loss). `remove_empty_dirs` preserves any directory that
+        // still contains files.
+        if mode == "move" && summary.failed == 0 && !summary.cancelled {
+            remove_empty_dirs(std::path::Path::new(&source));
         }
+
+        // Optional verification pass. Skipped for "move" (the source is gone,
+        // so there's nothing left to compare against) and when files failed.
+        if verify && mode != "move" && summary.failed == 0 {
+            summary.verify_mismatches = verify_transfer(&source, &effective_dest);
+            summary.verified = true;
+        }
+
         Ok(summary)
     } else {
         // Surface a meaningful error message (#4 disk full / access denied)
@@ -469,4 +582,131 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overall_pct_clamps_and_computes() {
+        assert_eq!(overall_pct(0, 0), 0);
+        assert_eq!(overall_pct(50, 100), 50);
+        assert_eq!(overall_pct(0, 100), 0);
+        // Never reports 100 mid-transfer; capped at 99.
+        assert_eq!(overall_pct(100, 100), 99);
+        assert_eq!(overall_pct(200, 100), 99);
+    }
+
+    #[test]
+    fn fmt_speed_scales_units() {
+        assert_eq!(fmt_speed(512), "512 B/s");
+        assert_eq!(fmt_speed(2048), "2 KB/s");
+        assert_eq!(fmt_speed(5 * 1_048_576), "5 MB/s");
+        assert_eq!(fmt_speed(3 * 1_073_741_824), "3.0 GB/s");
+    }
+
+    #[test]
+    fn ipg_throttle_calc() {
+        // 0 MB/s = unlimited = no IPG (uses /MT instead).
+        assert_eq!(ipg_for_throttle(0), None);
+        // Higher throughput = smaller gap; clamped to at least 1 ms.
+        assert_eq!(ipg_for_throttle(5), Some(13));   // 62.5/5 = 12.5 -> 13
+        assert_eq!(ipg_for_throttle(25), Some(3));   // 62.5/25 = 2.5 -> 3 (rounds half away from zero)
+        assert_eq!(ipg_for_throttle(100), Some(1));  // 62.5/100 = 0.625 -> 1
+        assert_eq!(ipg_for_throttle(1000), Some(1)); // clamps to 1
+    }
+
+    #[test]
+    fn basename_handles_windows_and_unix_separators() {
+        assert_eq!(basename("C:\\folder\\file.txt"), "file.txt");
+        assert_eq!(basename("/usr/local/bin/tool"), "tool");
+        assert_eq!(basename("C:\\folder\\"), "folder");
+        assert_eq!(basename("single"), "single");
+    }
+
+    #[test]
+    fn robocopy_exit_codes_classified() {
+        // 0..=7 are success/info -> no error message.
+        for code in 0..=7 {
+            assert!(robocopy_exit_message(code).is_none(), "code {code} should be success");
+        }
+        // 8 and 16 are failures.
+        assert!(robocopy_exit_message(8).is_some());
+        assert!(robocopy_exit_message(16).is_some());
+    }
+
+    #[test]
+    fn parse_new_file_line() {
+        let line = "\t    New File  \t\t      1024\tC:\\src\\photo.jpg";
+        match parse_line(line) {
+            RoboLine::FileHeader { is_same, is_error, size, name } => {
+                assert!(!is_same);
+                assert!(!is_error);
+                assert_eq!(size, 1024);
+                assert_eq!(name, "photo.jpg");
+            }
+            _ => panic!("expected FileHeader for a New File line"),
+        }
+    }
+
+    #[test]
+    fn parse_same_file_line_marked_same() {
+        let line = "\t    Same  \t\t      2048\tC:\\src\\doc.txt";
+        match parse_line(line) {
+            RoboLine::FileHeader { is_same, size, .. } => {
+                assert!(is_same);
+                assert_eq!(size, 2048);
+            }
+            _ => panic!("expected FileHeader for a Same line"),
+        }
+    }
+
+    #[test]
+    fn parse_error_line_marked_error() {
+        let line = "ERROR 5 (0x00000005) Copying File C:\\src\\locked.dat";
+        match parse_line(line) {
+            RoboLine::FileHeader { is_error, .. } => assert!(is_error),
+            // Some ERROR lines without a parseable size are skipped; that's acceptable.
+            RoboLine::Skip => {}
+            _ => panic!("ERROR line should be an error FileHeader or Skip"),
+        }
+    }
+
+    #[test]
+    fn parse_speed_line() {
+        let line = "   Speed :           123456789 Bytes/sec.";
+        match parse_line(line) {
+            RoboLine::Speed(bps) => assert_eq!(bps, 123456789),
+            _ => panic!("expected Speed line"),
+        }
+    }
+
+    #[test]
+    fn parse_blank_line_is_skip() {
+        assert!(matches!(parse_line("   "), RoboLine::Skip));
+        assert!(matches!(parse_line(""), RoboLine::Skip));
+    }
+
+    #[test]
+    fn remove_empty_dirs_preserves_files() {
+        let base = std::env::temp_dir().join(format!("warp_test_{}", std::process::id()));
+        let empty_child = base.join("empty");
+        let full_child = base.join("full");
+        std::fs::create_dir_all(&empty_child).unwrap();
+        std::fs::create_dir_all(&full_child).unwrap();
+        std::fs::write(full_child.join("keep.txt"), b"data").unwrap();
+
+        remove_empty_dirs(&base);
+
+        // The empty subtree is gone, but the directory holding a file remains.
+        assert!(!empty_child.exists(), "empty dir should be removed");
+        assert!(full_child.join("keep.txt").exists(), "file must be preserved");
+        assert!(base.exists(), "base still has a non-empty child");
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

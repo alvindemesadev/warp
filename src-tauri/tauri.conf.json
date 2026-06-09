@@ -13,12 +13,12 @@
     "windows": [
       {
         "title": "Warp",
-        "width": 480,
-        "height": 660,
-        "minWidth": 440,
-        "minHeight": 560,
-        "maxWidth": 700,
-        "maxHeight": 900,
+        "width": 560,
+        "height": 820,
+        "minWidth": 480,
+        "minHeight": 600,
+        "maxWidth": 800,
+        "maxHeight": 1100,
         "center": true,
         "decorations": false,
         "transparent": true,
@@ -34,12 +34,25 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Alvin",
+    "copyright": "© 2026 Alvin. MIT Licensed.",
+    "category": "Utility",
+    "shortDescription": "High-speed file transfer for Windows",
+    "longDescription": "Warp wraps Windows robocopy in a clean interface with real-time progress, live transfer speed, and per-transfer summaries.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

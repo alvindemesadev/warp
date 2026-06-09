@@ -553,6 +553,9 @@ async fn warp_file_op(
         // Optional verification pass. Skipped for "move" (the source is gone,
         // so there's nothing left to compare against) and when files failed.
         if verify && mode != "move" && summary.failed == 0 {
+            // Tell the UI we're now verifying (the transfer itself is done but
+            // the command hasn't returned yet — this can take a while).
+            let _ = window.emit("warp-verifying", ());
             summary.verify_mismatches = verify_transfer(&source, &effective_dest);
             summary.verified = true;
         }

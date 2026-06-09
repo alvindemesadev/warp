@@ -93,7 +93,10 @@
 
   let isProcessing = $state(false);
   let isScanning   = $state(false);
+  let isScanningDest = $state(false);
+  let isVerifying  = $state(false);
   let dragTarget   = $state<"source" | "dest" | null>(null);
+  let isDragging   = $state(false);
   let dropConflict = $state(false);
   let isIndeterminate = $state(false); // progress bar in pulse mode
 
@@ -115,6 +118,7 @@
   let queueTotal = $state(0);          // total jobs in the running batch
   let queueResults = $state<WarpSummary[]>([]);
   let showQueueSummary = $state(false);
+  let queueCancelled = $state(false);
   let _jobId = 0;
 
   // Presets
@@ -173,15 +177,23 @@
         errorLogs = [...errorLogs, payload];
       }));
 
+      // Backend signals it has started the post-transfer verification pass.
+      unlisten.push(await listen("warp-verifying", () => {
+        isVerifying = true;
+        currentFile = "Verifying…";
+      }));
+
       unlisten.push(await win.onDragDropEvent((e) => {
         const t = e.payload.type;
         if (t === "over") {
+          isDragging = true;
           if (!sourcePath) dragTarget = "source";
           else if (!destPath) dragTarget = "dest";
-          else dragTarget = null;
+          else dragTarget = null; // both full — the card-level hint covers this
         } else if (t === "drop") {
           const paths = (e.payload as any).paths as string[] ?? [];
           dragTarget = null;
+          isDragging = false;
           if (paths.length > 0) {
             const p = paths[0];
             if (!sourcePath) {
@@ -196,6 +208,7 @@
           }
         } else {
           dragTarget = null;
+          isDragging = false;
         }
       }));
     })();
@@ -256,10 +269,12 @@
     destPath = p;
     destInfo = null;
     if (!p) return;
+    isScanningDest = true;
     try {
       const info = await invoke<PathInfo>("get_path_info", { path: p });
       destInfo = info;
     } catch { destInfo = null; }
+    isScanningDest = false;
   }
 
   // #10: swap source and destination
@@ -303,6 +318,7 @@
     filesTotal = 0;
     etaSeconds = 0;
     transferredFiles = [];
+    isVerifying = false;
     currentFile = "Scanning…";
     lastSummary = null;
     errorLogs = [];
@@ -341,10 +357,19 @@
         isIndeterminate = false;
       }
     } catch (err) {
-      currentFile = String(err);
+      // The command itself failed to run (not a robocopy error — those return a
+      // summary). Surface it as a proper failed-transfer result instead of
+      // leaving the UI silently stuck on the form.
+      lastSummary = {
+        totalFiles: 0, transferred: 0, skipped: 0, failed: 0,
+        durationMs: 0, bytesTransferred: 0, cancelled: false,
+        errorCode: -1, errorMessage: `Could not start the transfer: ${String(err)}`,
+        verified: false, verifyMismatches: 0,
+      };
       isIndeterminate = false;
     } finally {
       isProcessing = false;
+      isVerifying = false;
     }
   }
 
@@ -352,6 +377,7 @@
   async function cancelTransfer() {
     await invoke("cancel_warp");
     isProcessing = false;
+    isVerifying = false;
     currentFile = "Cancelled";
     progress = 0;
     isIndeterminate = false;
@@ -363,12 +389,13 @@
     progress = 0; speed = ""; currentFile = "";
     filesDone = filesTotal = 0;
     etaSeconds = 0; transferredFiles = [];
-    isProcessing = false; isScanning = false;
+    isProcessing = false; isScanning = false; isScanningDest = false;
+    isVerifying = false;
     isIndeterminate = false;
     lastSummary = null; errorLogs = [];
-    dragTarget = null; dropConflict = false;
+    dragTarget = null; isDragging = false; dropConflict = false;
     showSyncWarning = false;
-    showQueueSummary = false; queueResults = [];
+    showQueueSummary = false; queueResults = []; queueCancelled = false;
   }
 
   // ── Transfer queue ───────────────────────────────────────────────────────────
@@ -403,6 +430,7 @@
     isQueueRunning = true;
     queueResults = [];
     queueTotal = jobs.length;
+    queueCancelled = false;
     lastSummary = null;
     showQueueSummary = false;
 
@@ -421,7 +449,8 @@
 
       isProcessing = true;
       progress = 0; speed = ""; filesDone = 0; filesTotal = 0;
-      etaSeconds = 0; transferredFiles = []; currentFile = "Scanning…"; errorLogs = [];
+      etaSeconds = 0; transferredFiles = []; isVerifying = false;
+      currentFile = "Scanning…"; errorLogs = [];
 
       try {
         const s = await invoke<WarpSummary>("warp_file_op", {
@@ -434,21 +463,29 @@
           verify: job.verify,
         });
         queueResults = [...queueResults, s];
-        if (!s.cancelled) {
-          saveRecent({
-            source: job.source, dest: job.dest, mode: job.mode,
-            transferred: s.transferred, bytes: s.bytesTransferred,
-            duration_ms: s.durationMs, timestamp: Date.now(),
-          });
-        } else {
+        if (s.cancelled) {
           // User cancelled — stop processing the rest of the queue.
+          queueCancelled = true;
           isProcessing = false;
           break;
         }
+        saveRecent({
+          source: job.source, dest: job.dest, mode: job.mode,
+          transferred: s.transferred, bytes: s.bytesTransferred,
+          duration_ms: s.durationMs, timestamp: Date.now(),
+        });
       } catch (err) {
-        currentFile = String(err);
+        // Command failed to run — record it as a failed job so it still shows
+        // in the summary instead of silently vanishing.
+        queueResults = [...queueResults, {
+          totalFiles: 0, transferred: 0, skipped: 0, failed: 0,
+          durationMs: 0, bytesTransferred: 0, cancelled: false,
+          errorCode: -1, errorMessage: `Could not start the transfer: ${String(err)}`,
+          verified: false, verifyMismatches: 0,
+        }];
       }
       isProcessing = false;
+      isVerifying = false;
     }
 
     // Done — surface a combined summary.
@@ -456,6 +493,7 @@
     queueIndex = 0;
     isQueueRunning = false;
     isIndeterminate = false;
+    isVerifying = false;
     progress = 100;
     showQueueSummary = true;
     notifyQueueDone();
@@ -526,9 +564,13 @@
       if (!granted) granted = (await requestPermission()) === "granted";
       if (granted) {
         const files = queueResults.reduce((n, r) => n + r.transferred, 0);
+        const anyFailed = queueResults.some((r) => r.failed > 0 || r.errorMessage);
+        const title = queueCancelled ? "Warp — Queue Cancelled"
+          : anyFailed ? "Warp — Queue Finished (with errors)"
+          : "Warp — Queue Complete";
         sendNotification({
-          title: "Warp — Queue Complete",
-          body: `${queueResults.length} jobs · ${files.toLocaleString()} files transferred`,
+          title,
+          body: `${queueResults.length} ${queueResults.length === 1 ? "job" : "jobs"} · ${files.toLocaleString()} files transferred`,
         });
       }
     } catch {}
@@ -838,14 +880,24 @@
 
     {#if showQueueSummary}
       <!-- ── Queue summary ─────────────────────────────────────────────── -->
+      {@const anyFailed = queueResults.some((r) => r.failed > 0 || !!r.errorMessage)}
+      {@const headerColor = queueCancelled ? "255,159,10" : anyFailed ? "255,69,58" : "48,209,88"}
       <div class="animate-fade-up" style="display:flex;flex-direction:column;gap:11px;">
         <div style="background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(48px) saturate(180%);border-radius:16px;overflow:hidden;">
           <div style="padding:15px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--glass-border);">
-            <div style="width:38px;height:38px;border-radius:11px;flex-shrink:0;background:rgba(48,209,88,0.14);display:flex;align-items:center;justify-content:center;">
-              <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M5.5 10.5l3 3 6-6.5" stroke="#30d158" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div style="width:38px;height:38px;border-radius:11px;flex-shrink:0;background:rgba({headerColor},0.14);display:flex;align-items:center;justify-content:center;">
+              {#if queueCancelled}
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="#ff9f0a" stroke-width="1.8" stroke-linecap="round"/></svg>
+              {:else if anyFailed}
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="#ff453a" stroke-width="1.5"/><path d="M10 6.5v4m0 2.5v.5" stroke="#ff453a" stroke-width="1.6" stroke-linecap="round"/></svg>
+              {:else}
+                <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M5.5 10.5l3 3 6-6.5" stroke="#30d158" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              {/if}
             </div>
             <div style="flex:1;min-width:0;">
-              <p style="font-size:15px;font-weight:600;color:var(--text-primary);margin:0;letter-spacing:-0.01em;">Queue complete</p>
+              <p style="font-size:15px;font-weight:600;color:var(--text-primary);margin:0;letter-spacing:-0.01em;">
+                {queueCancelled ? "Queue cancelled" : anyFailed ? "Queue finished with errors" : "Queue complete"}
+              </p>
               <p style="font-size:11px;color:var(--text-tertiary);margin:3px 0 0;">
                 {queueResults.length} {queueResults.length === 1 ? "job" : "jobs"} ·
                 {queueResults.reduce((n, r) => n + r.transferred, 0).toLocaleString()} files ·
@@ -888,8 +940,10 @@
     {:else if !lastSummary}
 
     <!-- Source + Dest card -->
-    <div style="background:var(--glass-bg);border:1px solid var(--glass-border);backdrop-filter:blur(48px) saturate(180%);border-radius:16px;overflow:visible;position:relative;">
-
+    <div style="background:var(--glass-bg);border:1px solid {isDragging && sourcePath && destPath ? 'rgba(10,132,255,0.5)' : 'var(--glass-border)'};backdrop-filter:blur(48px) saturate(180%);border-radius:16px;overflow:visible;position:relative;transition:border-color 0.15s;">
+      {#if isDragging && sourcePath && destPath}
+        <div style="position:absolute;top:-9px;left:50%;transform:translateX(-50%);z-index:20;background:var(--accent);color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;padding:2px 8px;border-radius:6px;white-space:nowrap;">DROP TO REPLACE A SLOT</div>
+      {/if}
       <!-- Source row -->
       <div style="display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--glass-border);background:{dragTarget==='source'?'rgba(10,132,255,0.08)':'transparent'};transition:background 0.15s;border-radius:16px 16px 0 0;">
         <!-- Folder icon -->
@@ -913,7 +967,7 @@
               {#if isScanning}<span class="animate-pulse-soft">Scanning…</span>
               {:else if sourceInfo?.isFile}<span style="color:var(--red);">Drop a folder, not a file</span>
               {:else if sourceInfo}{fmtFiles(sourceInfo.files)} · {fmtBytes(sourceInfo.bytes)}
-              {:else}{sourcePath}{/if}
+              {:else}<span style="color:var(--orange);">⚠ Folder not found or unreadable</span>{/if}
             </p>
             {#if sourceWarning}
               <p style="font-size:9px;color:var(--orange);margin:2px 0 0;">⚠ {sourceWarning}</p>
@@ -972,10 +1026,11 @@
           {#if destPath}
             <p style="font-size:13px;font-weight:500;color:{destInfo?.isFile?'var(--red)':'var(--text-primary)'};margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title={destPath}>{basename(destPath)}</p>
             <p style="font-size:10px;color:var(--text-tertiary);margin:1px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-              {#if destInfo?.isFile}<span style="color:var(--red);">Drop a folder, not a file</span>
+              {#if isScanningDest}<span class="animate-pulse-soft">Scanning…</span>
+              {:else if destInfo?.isFile}<span style="color:var(--red);">Drop a folder, not a file</span>
               {:else if destInfo && destInfo.files > 0}{fmtFiles(destInfo.files)} · {fmtBytes(destInfo.bytes)} already here
               {:else if destInfo}Empty folder
-              {:else}{destPath}{/if}
+              {:else}<span style="color:var(--orange);">⚠ Folder not found or unreadable</span>{/if}
             </p>
             {#if destWarning}
               <p style="font-size:9px;color:var(--orange);margin:2px 0 0;">⚠ {destWarning}</p>
@@ -1241,7 +1296,7 @@
     <!-- Status hint -->
     {#if !isProcessing}
       <p style="text-align:center;font-size:11px;color:var(--text-tertiary);margin:-5px 0 0;">
-        {#if sourcePath && destPath && sourceInfo && !sourceInfo.isFile}
+        {#if sourcePath && destPath && sourceInfo && !sourceInfo.isFile && !destInfo?.isFile}
           {@const effectiveDest = folderMode === 'into' && basename(destPath).toLowerCase() !== basename(sourcePath).toLowerCase()
             ? destPath.replace(/\\+$/, '') + '\\' + basename(sourcePath)
             : destPath}
@@ -1350,7 +1405,7 @@
     <p style="text-align:center;font-size:9px;color:rgba(255,255,255,0.12);margin:-2px 0 0;letter-spacing:0.02em;">
       {#if isProcessing}Esc to cancel
       {:else if lastSummary}Esc to reset
-      {:else}⌘O source · ⌘⇧O destination · Enter to start{/if}
+      {:else}Ctrl+O source · Ctrl+Shift+O destination · Enter to start{/if}
     </p>
 
   </div>

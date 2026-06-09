@@ -9,7 +9,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Warp UI" width="480" />
+  <img src="docs/screenshot.png?v=2" alt="Warp UI" width="480" />
 </p>
 
 ---

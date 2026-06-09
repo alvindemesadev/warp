@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+/* ── Design tokens — identical to the Warp app ──────────────────────────── */
+:root {
+  /* Font — SF Pro stack matching the app */
+  --font-sf: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue",
+    Arial, sans-serif;
+
+  /* Glass surfaces */
+  --glass-bg:     rgba(28, 28, 30, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-hover:  rgba(255, 255, 255, 0.05);
+
+  /* Accent colors */
+  --accent:       #0a84ff;
+  --accent-hover: #409cff;
+  --green:        #30d158;
+  --red:          #ff453a;
+  --yellow:       #ffd60a;
+  --orange:       #ff9f0a;
+
+  /* Surfaces */
+  --surface-0: #000000;
+  --surface-1: rgba(28, 28, 30, 0.85);
+  --surface-2: rgba(44, 44, 46, 0.60);
+  --surface-3: rgba(58, 58, 60, 0.50);
+
+  /* Text */
+  --text-primary:   rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.50);
+  --text-tertiary:  rgba(255, 255, 255, 0.28);
+}
+
+/* ── Reset ────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: var(--font-sf);
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+
+/* ── Noise texture overlay ────────────────────────────────────────────────── */
+.noise::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.025;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Glass card ───────────────────────────────────────────────────────────── */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(48px) saturate(180%);
+  -webkit-backdrop-filter: blur(48px) saturate(180%);
+}
+
+/* ── Shimmer gradient animation (matches app progress bar) ───────────────── */
+@keyframes shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, var(--accent), #5e5ce6, var(--accent));
+  background-size: 300% auto;
+  animation: shimmer 2.5s linear infinite;
+}
+
+/* ── Focus visible ───────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

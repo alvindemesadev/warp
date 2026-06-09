@@ -1,16 +1,22 @@
+<div align="center">
+
+<img src="docs/warp-logo.png" alt="Warp" width="76" height="76" style="border-radius:16px" />
+
 # Warp — High-Speed File Transfer
 
-> A fast, minimal desktop app for copying, moving, and syncing files on Windows.
+**A fast, minimal desktop app for copying, moving, and syncing files on Windows.**
 
 Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving you real-time progress, live transfer speed, and per-transfer summaries without touching the command line.
 
----
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8D8?logo=tauri&logoColor=white)](https://tauri.app)
+[![SvelteKit](https://img.shields.io/badge/SvelteKit-2-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Rust](https://img.shields.io/badge/Rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-30d158.svg)](#license)
 
-## Screenshots
+<img src="docs/screenshot.png" alt="Warp UI" width="640" />
 
-<p align="center">
-  <img src="docs/screenshot.png?v=2" alt="Warp UI" width="480" />
-</p>
+</div>
 
 ---
 

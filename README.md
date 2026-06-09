@@ -41,7 +41,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 | **Live file list** | See files scroll by as they transfer, not just the current one |
 | **ETA** | Estimated time remaining, from live throughput |
 | **Verify mode** | Optional post-transfer re-compare to confirm every file arrived |
-| **Bandwidth throttle** | Cap transfer speed (e.g. 5 / 25 / 100 MB/s) to leave headroom |
+| **Bandwidth throttle** | Cap transfer speed (Unlimited / 100 / 25 / 5 MB/s, or a custom value) to leave headroom |
 | **System notifications** | Notified when a background transfer finishes |
 | **Keyboard shortcuts** | Enter, Esc, Ctrl+O, Ctrl+Shift+O |
 | **Sub-second duration** | Shows `0.3s` instead of `0s` |
@@ -71,7 +71,7 @@ Warp_1.0.0_x64_en-US.msi   MSI installer
 2. **Drop** a destination folder onto the right zone (or click **browse**)
 3. Choose a **mode** — Copy, Move, or Sync
 4. Choose **destination behavior** — Inside folder or Merge contents
-5. Optionally set **Speed** (bandwidth throttle) and toggle **Verify after transfer**
+5. Optionally set a **Max speed** limit (including a custom value) and toggle **Verify** on
 6. Click **Copy / Move / Sync Files** or press **Enter**
 
 ### Transfer queue

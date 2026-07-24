@@ -10,7 +10,7 @@
   type Mode = "copy" | "move" | "sync";
   type Conflict = "overwrite" | "skip";
 
-  type PathInfo = { files: number; bytes: number; isFile: boolean; drive: string };
+  type PathInfo = { files: number; bytes: number; isFile: boolean; drive: string; removable: boolean };
 
   type WarpProgress = {
     percentage: number;
@@ -653,6 +653,10 @@
   const sourceWarning = $derived(sourcePath ? isSpecialPath(sourcePath) : null);
   const destWarning   = $derived(destPath   ? isSpecialPath(destPath)   : null);
 
+  // USB drive detection — shown as an orange hint alongside OneDrive/network warnings
+  const sourceUsb = $derived(sourceInfo?.removable ?? false);
+  const destUsb   = $derived(destInfo?.removable ?? false);
+
   // Cross-drive move warning — robocopy copies then deletes; cancel mid-way leaves partial state
   const crossDriveMove = $derived(
     mode === "move" &&
@@ -984,6 +988,9 @@
             {#if sourceWarning}
               <p style="font-size:9px;color:var(--orange);margin:2px 0 0;">⚠ {sourceWarning}</p>
             {/if}
+            {#if sourceUsb}
+              <p style="font-size:9px;color:var(--orange);margin:2px 0 0;">⚠ USB drive — reduced threads for optimal throughput</p>
+            {/if}
           {:else}
             <p style="font-size:13px;color:var(--text-tertiary);margin:0;">Drop or <button onclick={browseSource} style="background:none;border:none;color:var(--accent);font-size:13px;font-family:var(--font-sf);cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px;">browse</button></p>
           {/if}
@@ -1046,6 +1053,9 @@
             </p>
             {#if destWarning}
               <p style="font-size:9px;color:var(--orange);margin:2px 0 0;">⚠ {destWarning}</p>
+            {/if}
+            {#if destUsb}
+              <p style="font-size:9px;color:var(--orange);margin:2px 0 0;">⚠ USB drive — reduced threads for optimal throughput</p>
             {/if}
           {:else}
             <p style="font-size:13px;color:var(--text-tertiary);margin:0;">Drop or <button onclick={browseDest} style="background:none;border:none;color:var(--accent);font-size:13px;font-family:var(--font-sf);cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px;">browse</button></p>

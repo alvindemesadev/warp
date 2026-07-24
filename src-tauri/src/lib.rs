@@ -51,6 +51,28 @@ pub struct PathMeta {
     pub bytes: u64,
     pub is_file: bool,
     pub drive: String, // e.g. "C:" for cross-drive detection
+    pub removable: bool, // true if the drive is a removable/USB drive
+}
+
+// ── Drive type detection (Windows) ──────────────────────────────────────────
+
+#[cfg(windows)]
+extern "system" {
+    #[link_name = "GetDriveTypeW"]
+    fn winapi_GetDriveTypeW(lpRootPathName: *const u16) -> u32;
+}
+
+#[cfg(windows)]
+fn is_removable_drive(drive: &str) -> bool {
+    let root = format!(r"{}\", drive.trim_end_matches(':'));
+    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    const DRIVE_REMOVABLE: u32 = 2;
+    unsafe { winapi_GetDriveTypeW(wide.as_ptr()) == DRIVE_REMOVABLE }
+}
+
+#[cfg(not(windows))]
+fn is_removable_drive(_drive: &str) -> bool {
+    false
 }
 
 // ── Command factory ───────────────────────────────────────────────────────────
@@ -82,6 +104,7 @@ async fn get_path_info(path: String) -> Result<PathMeta, String> {
             bytes: meta.len(),
             is_file: true,
             drive,
+            removable: false,
         });
     }
 
@@ -89,11 +112,14 @@ async fn get_path_info(path: String) -> Result<PathMeta, String> {
     let mut bytes = 0u64;
     walk_dir(&path, &mut count, &mut bytes);
 
+    let removable = !drive.is_empty() && is_removable_drive(&drive);
+
     Ok(PathMeta {
         files: count,
         bytes,
         is_file: false,
         drive,
+        removable,
     })
 }
 
@@ -196,6 +222,21 @@ fn basename(path: &str) -> String {
         .last()
         .unwrap_or(path)
         .to_string()
+}
+
+/// Extract the drive letter (e.g. "C:") from a path, or empty string.
+fn extract_drive(path: &str) -> String {
+    std::path::Path::new(path)
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Returns true if the given path is on a removable (USB) drive.
+fn is_path_on_usb(path: &str) -> bool {
+    let drive = extract_drive(path);
+    !drive.is_empty() && is_removable_drive(&drive)
 }
 
 /// Translate robocopy exit codes to human-readable messages.
@@ -405,9 +446,21 @@ async fn warp_file_op(
     // Bandwidth throttle via inter-packet gap (/IPG). Robocopy moves data in
     // 64 KB blocks; an N ms gap between blocks caps throughput. /IPG is applied
     // per thread, so disable multithreading when throttling to keep the cap
-    // accurate; otherwise use 32 threads for maximum speed.
+    // accurate; otherwise use multi-threaded mode.
+    //
+    // USB auto-tuning: removable drives have limited IO queues. Reduce threads
+    // (4 instead of 32) and enable restartable mode (/Z) for resilience against
+    // unexpected disconnects.
+    let is_usb_source = is_path_on_usb(&source);
+    let is_usb_dest = is_path_on_usb(&effective_dest);
+    let is_usb = is_usb_source || is_usb_dest;
+
     if let Some(ipg) = ipg_for_throttle(throttle) {
         args.push(format!("/IPG:{ipg}"));
+        // Throttling is single-threaded; no /MT needed.
+    } else if is_usb {
+        // USB: fewer threads to avoid overwhelming the controller
+        args.push("/MT:4".to_string());
     } else {
         args.push("/MT:32".to_string());
     }

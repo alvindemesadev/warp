@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { sendNotification, isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+  import { basename, fmtBytes, fmtDuration, fmtEta, fmtFiles, timeAgo } from "$lib/format";
 
   // ── Types ──────────────────────────────────────────────────────────────────
   type Mode = "copy" | "move" | "sync";
@@ -144,8 +146,17 @@
 
   const win = getCurrentWindow();
 
+  // Focus the preset-name input as soon as its modal opens.
+  function focusInput(node: HTMLInputElement) {
+    node.focus();
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
   onMount(() => {
+    // Real app version from tauri.conf.json (falls back to the constant above
+    // if the call fails, e.g. running in a plain browser during dev).
+    getVersion().then((v) => (APP_VERSION = v)).catch(() => {});
+
     // Load recent from localStorage
     try {
       const saved = localStorage.getItem("warp-recent");
@@ -230,6 +241,7 @@
         else if (lastSummary) { reset(); }
         else if (showSyncWarning) { showSyncWarning = false; }
         else if (dropConflict) { dropConflict = false; }
+        else if (showPresetModal) { showPresetModal = false; }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "o") {
         e.preventDefault();
@@ -509,15 +521,26 @@
     showQueueSummary = true;
     notifyQueueDone();
   }
-  function savePreset() {
+  // Preset naming uses an in-app modal — `window.prompt` is not available in
+  // WebView2, so the browser-native prompt would silently do nothing.
+  let showPresetModal = $state(false);
+  let presetName = $state("");
+
+  function openPresetModal() {
     if (!sourcePath || !destPath) return;
-    const name = (prompt("Name this preset:", `${basename(sourcePath)} → ${basename(destPath)}`) || "").trim();
+    presetName = `${basename(sourcePath)} → ${basename(destPath)}`;
+    showPresetModal = true;
+  }
+
+  function confirmSavePreset() {
+    const name = presetName.trim();
     if (!name) return;
     const entry: Preset = { name, ...currentJobConfig() };
     // Replace an existing preset with the same name, otherwise append.
     const next = [...presets.filter((p) => p.name !== name), entry];
     presets = next;
     try { localStorage.setItem("warp-presets", JSON.stringify(next)); } catch {}
+    showPresetModal = false;
   }
 
   function loadPreset(p: Preset) {
@@ -589,47 +612,14 @@
   }
 
   // ── Formatters ─────────────────────────────────────────────────────────────
-  function basename(p: string) {
-    return p.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? p;
-  }
-
-  function fmtBytes(b: number): string {
-    if (b >= 1_073_741_824) return `${(b / 1_073_741_824).toFixed(1)} GB`;
-    if (b >= 1_048_576)     return `${(b / 1_048_576).toFixed(1)} MB`;
-    if (b >= 1024)          return `${(b / 1024).toFixed(0)} KB`;
-    return `${b} B`;
-  }
-
-  function fmtFiles(n: number): string {
-    return n === 1 ? "1 file" : `${n.toLocaleString()} files`;
-  }
-
-  // #9: sub-second duration
-  function fmtDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    const s = ms / 1000;
-    if (s < 60) return `${s.toFixed(1)}s`;
-    return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
-  }
-
-  // ETA — seconds remaining, rendered compactly.
-  function fmtEta(secs: number): string {
-    if (secs <= 0) return "";
-    if (secs < 60) return `${secs}s left`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s left`;
-    return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m left`;
-  }
-
-  function timeAgo(ts: number): string {
-    const diff = Date.now() - ts;
-    if (diff < 60_000) return "just now";
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-    return `${Math.floor(diff / 86_400_000)}d ago`;
-  }
+  // Pure helpers live in $lib/format (unit-tested); see imports above.
 
   // ── Constants ──────────────────────────────────────────────────────────────
-  const APP_VERSION = "1.0.0";
+  // App version is fetched at runtime via getVersion() (source of truth:
+  // tauri.conf.json / Cargo.toml) so the header can't drift from the packaged
+  // build. The literal below is only a fallback for plain-browser dev
+  // (`npm run dev` without Tauri) and the initial paint before it resolves.
+  let APP_VERSION = $state("1.0.1");
 
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
@@ -683,8 +673,7 @@
 <!-- ── Traffic lights ─────────────────────────────────────────────────────── -->
 <div
   data-tauri-drag-region
-  class="fixed top-0 left-0 right-0 h-9 z-50 flex items-center px-3.5 gap-[6px]"
-  style="cursor:default;"
+  style="position:fixed;top:0;left:0;right:0;height:36px;z-index:50;display:flex;align-items:center;padding:0 14px;gap:6px;cursor:default;"
 >
   <button
     onclick={() => win.close()} aria-label="Close"
@@ -713,12 +702,12 @@
 </div>
 
 <!-- ── Background ─────────────────────────────────────────────────────────── -->
-<div class="fixed inset-0 -z-10" style="background:#000;">
-  <svg class="absolute inset-0 w-full h-full" style="opacity:0.025;" xmlns="http://www.w3.org/2000/svg">
+<div style="position:fixed;inset:0;z-index:-10;background:#000;">
+  <svg style="position:absolute;inset:0;width:100%;height:100%;opacity:0.025;" xmlns="http://www.w3.org/2000/svg">
     <filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="4" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
     <rect width="100%" height="100%" filter="url(#n)"/>
   </svg>
-  <div class="absolute" style="top:-80px;left:50%;transform:translateX(-50%);width:500px;height:280px;background:radial-gradient(ellipse,rgba(10,132,255,0.15) 0%,transparent 70%);border-radius:50%;filter:blur(1px);pointer-events:none;"></div>
+  <div style="position:absolute;top:-80px;left:50%;transform:translateX(-50%);width:500px;height:280px;background:radial-gradient(ellipse,rgba(10,132,255,0.15) 0%,transparent 70%);border-radius:50%;filter:blur(1px);pointer-events:none;"></div>
 </div>
 
 <!-- ── Sync warning modal (#5) ────────────────────────────────────────────── -->
@@ -869,6 +858,50 @@
           </div>
         {/each}
       {/if}
+    </div>
+  </div>
+{/if}
+
+<!-- ── Preset name modal (replaces window.prompt, unsupported in WebView2) ── -->
+{#if showPresetModal}
+  <div
+    style="position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:24px;"
+    role="dialog" aria-modal="true" aria-label="Save preset" tabindex="-1"
+  >
+    <button
+      type="button" aria-label="Dismiss"
+      onclick={() => showPresetModal = false}
+      style="position:fixed;inset:0;border:none;padding:0;margin:0;background:rgba(0,0,0,0.65);cursor:default;"
+    ></button>
+    <div
+      style="position:relative;background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:22px;max-width:320px;width:100%;"
+    >
+      <p style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 4px;">Name this preset</p>
+      <p style="font-size:11px;color:var(--text-tertiary);margin:0 0 14px;">Saves the current source, destination, and options for one-click reuse.</p>
+      <input
+        type="text"
+        use:focusInput
+        bind:value={presetName}
+        placeholder="Preset name"
+        onkeydown={(e) => { if (e.key === "Enter") confirmSavePreset(); }}
+        style="width:100%;padding:9px 11px;border-radius:9px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:var(--text-primary);font-size:13px;font-family:var(--font-sf);outline:none;"
+        aria-label="Preset name"
+      />
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button
+          onclick={() => showPresetModal = false}
+          style="flex:1;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:var(--text-secondary);font-size:13px;font-weight:500;cursor:pointer;"
+          onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.background='rgba(255,255,255,0.05)'}
+          onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+        >Cancel</button>
+        <button
+          onclick={confirmSavePreset}
+          disabled={!presetName.trim()}
+          style="flex:1;padding:10px;border-radius:10px;border:none;background:var(--accent);color:white;font-size:13px;font-weight:600;cursor:pointer;opacity:{presetName.trim() ? 1 : 0.5};"
+          onmouseenter={(e)=>{ if(presetName.trim())(e.currentTarget as HTMLElement).style.background='var(--accent-hover)'; }}
+          onmouseleave={(e)=>{ (e.currentTarget as HTMLElement).style.background='var(--accent)'; }}
+        >Save</button>
+      </div>
     </div>
   </div>
 {/if}
@@ -1166,7 +1199,7 @@
     <!-- Preset + Queue actions -->
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">
       <button
-        onclick={savePreset}
+        onclick={openPresetModal}
         disabled={!sourcePath || !destPath}
         title="Save the current source, destination, and options as a reusable preset"
         style="padding:4px 10px;border-radius:7px;font-size:10px;font-weight:600;border:1px solid var(--glass-border);background:rgba(255,255,255,0.04);color:{sourcePath&&destPath?'var(--text-secondary)':'var(--text-tertiary)'};cursor:{sourcePath&&destPath?'pointer':'not-allowed'};font-family:var(--font-sf);"

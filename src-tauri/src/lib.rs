@@ -89,6 +89,13 @@ fn robocopy_cmd() -> Command {
 
 #[tauri::command]
 async fn get_path_info(path: String) -> Result<PathMeta, String> {
+    // Walking a large tree can take a while — never block an async worker.
+    tauri::async_runtime::spawn_blocking(move || get_path_info_sync(path))
+        .await
+        .map_err(|e| format!("Path scan task failed: {e}"))?
+}
+
+fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
 
     // Extract drive letter (Windows: "C:", "D:", etc.)
@@ -261,16 +268,28 @@ fn robocopy_exit_message(code: i32) -> Option<String> {
 
 enum RoboLine {
     FileHeader { is_same: bool, is_error: bool, size: u64, name: String },
-    #[allow(dead_code)]
-    Pct(f64),
     Speed(u64),
     Skip,
 }
 
+/// Parse one line of robocopy output.
+///
+/// Instead of matching robocopy's English status words ("New File", "Same",
+/// "ERROR"), the parser keys off the tab-delimited COLUMN STRUCTURE, which is
+/// identical in every Windows locale — only the status word itself is
+/// localized. File rows always have 5 columns (`["", status, "", size, path]`),
+/// directory rows have 3, and error log lines carry a locale-independent
+/// `N (0xXXXXXXXX)` code pair. This keeps progress, totals, and file names
+/// accurate on non-English Windows; only the Same/ERROR *classification* falls
+/// back to best-effort word matching (an unrecognized status is treated as a
+/// regular copy, which is the safe direction for progress tracking).
 fn parse_line(raw: &str) -> RoboLine {
     let t = raw.trim();
     if t.is_empty() { return RoboLine::Skip; }
 
+    // Speed line (best-effort — the "Bytes/sec" label is localized too, but
+    // live speed is also computed from file sizes, so this only helps the
+    // very first second of a transfer).
     if t.to_lowercase().contains("bytes/sec") {
         for tok in t.split_whitespace() {
             if let Ok(bps) = tok.replace(',', "").parse::<u64>() {
@@ -280,32 +299,39 @@ fn parse_line(raw: &str) -> RoboLine {
         return RoboLine::Skip;
     }
 
+    // Error log lines, e.g. "2026/08/06 21:12:33 ERROR 32 (0x00000020) Copying
+    // File C:\...". The "<decimal> (0x<hex>)" pair is rendered the same in
+    // every locale, unlike the "ERROR" word itself.
     {
         let toks: Vec<&str> = t.split_whitespace().collect();
-        if toks.len() == 1 && toks[0].ends_with('%') {
-            if let Ok(p) = toks[0].trim_end_matches('%').parse::<f64>() {
-                if (0.0..=100.0).contains(&p) { return RoboLine::Pct(p); }
+        for (i, tok) in toks.iter().enumerate() {
+            if tok.parse::<u32>().is_err() { continue; }
+            let Some(hex) = toks.get(i + 1) else { break };
+            let is_hex_code = hex.starts_with("(0x")
+                && hex.ends_with(')')
+                && hex.len() > 4
+                && hex[3..hex.len() - 1].chars().all(|c| c.is_ascii_hexdigit());
+            if is_hex_code {
+                let name = basename(&toks[i + 2..].join(" "));
+                return RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name };
             }
         }
     }
 
-    let known = [
-        ("New File", false, false),
-        ("Newer",    false, false),
-        ("Older",    false, false),
-        ("Same",     true,  false),
-        ("ERROR",    false, true ),
-    ];
-
-    for (tag, is_same, is_error) in &known {
-        if let Some(after) = t.find(tag).map(|p| &t[p + tag.len()..]) {
-            let mut parts = after.split_whitespace();
-            if let Some(size_str) = parts.next() {
-                if let Ok(size) = size_str.parse::<u64>() {
-                    let rest: Vec<&str> = parts.collect();
-                    let name = if rest.is_empty() { String::new() } else { basename(&rest.join(" ")) };
-                    return RoboLine::FileHeader { is_same: *is_same, is_error: *is_error, size, name };
-                }
+    // File-list rows are tab-delimited. IMPORTANT: split `raw` (not `t`) — the
+    // leading tab is what keeps column 0 empty.
+    //   File rows:  ["", "New File", "", "1024", "path"]   (5 columns)
+    //   Dir rows:   ["", "New Dir  1", "path"]             (3 columns, skipped)
+    //   Extra rows: ["", "*EXTRA File", "", "12", "path"] (dest-only, skipped)
+    let cols: Vec<&str> = raw.split('\t').collect();
+    if cols.len() >= 5 {
+        let status = cols[1].trim();
+        let path = cols[4..].join(" ").trim().to_string();
+        if let Ok(size) = cols[3].trim().parse::<u64>() {
+            if !status.is_empty() && !path.is_empty() && !status.starts_with('*') {
+                let is_same = status.eq_ignore_ascii_case("Same");
+                let is_error = status.eq_ignore_ascii_case("ERROR");
+                return RoboLine::FileHeader { is_same, is_error, size, name: basename(&path) };
             }
         }
     }
@@ -354,20 +380,57 @@ fn verify_transfer(source: &str, destination: &str) -> u32 {
         Err(_) => return 0,
     };
 
+    // A file robocopy would still copy = not identical in the destination.
+    // (File rows the parser couldn't classify, e.g. localized status words,
+    // are treated as copies — see parse_line.)
     let mut mismatches = 0u32;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        // A file robocopy would still copy = not identical in the destination.
         if let RoboLine::FileHeader { is_same: false, is_error: false, .. } = parse_line(line) {
             mismatches += 1;
         }
     }
-    mismatches
+
+    // Robocopy's own exit code is the authoritative signal: 0 = nothing would
+    // be copied (identical trees), anything else = the comparison was unable to
+    // prove the trees identical (files differ, or the verify pass itself errored
+    // with an 8+ code). Backs up the parser on non-English systems so verify can
+    // never report a false "all clear".
+    let code = out.status.code().unwrap_or(0);
+    if code == 0 {
+        0
+    } else {
+        mismatches.max(1)
+    }
 }
 
 // ── Main transfer command ─────────────────────────────────────────────────────
 
 #[tauri::command]
 async fn warp_file_op(
+    window: Window,
+    app: tauri::AppHandle,
+    source: String,
+    destination: String,
+    mode: String,
+    conflict: String,
+    folder_mode: String, // "into" | "merge"
+    throttle: u32,       // target MB/s, 0 = unlimited
+    verify: bool,        // run a verification pass after a successful transfer
+) -> Result<WarpSummary, String> {
+    // The whole pipeline (scan pass + streaming robocopy output) is synchronous
+    // and can run for a long time. Running it inside an `async` command would
+    // occupy a Tokio worker for the entire transfer and starve concurrent IPC
+    // calls (e.g. get_path_info), so it moves to a dedicated blocking thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        warp_file_op_sync(window, app, source, destination, mode, conflict, folder_mode, throttle, verify)
+    })
+    .await
+    .map_err(|e| format!("Transfer task failed: {e}"))?
+}
+
+/// The synchronous transfer pipeline (scan → copy → verify). Runs on the
+/// blocking thread pool via `spawn_blocking` — see `warp_file_op`.
+fn warp_file_op_sync(
     window: Window,
     app: tauri::AppHandle,
     source: String,
@@ -459,8 +522,11 @@ async fn warp_file_op(
         args.push(format!("/IPG:{ipg}"));
         // Throttling is single-threaded; no /MT needed.
     } else if is_usb {
-        // USB: fewer threads to avoid overwhelming the controller
+        // USB: fewer threads to avoid overwhelming the controller, plus
+        // restartable mode (/Z) so a copy interrupted by an unplugged drive
+        // resumes from where it left off instead of restarting the whole file.
         args.push("/MT:4".to_string());
+        args.push("/Z".to_string());
     } else {
         args.push("/MT:32".to_string());
     }
@@ -558,8 +624,6 @@ async fn warp_file_op(
                         });
                     }
                 }
-
-                RoboLine::Pct(_) => {}
 
                 RoboLine::Speed(bps) => {
                     if last_speed_str.is_empty() {
@@ -747,6 +811,54 @@ mod tests {
     }
 
     #[test]
+    fn parse_non_english_file_line() {
+        // German robocopy: the status word is localized ("Neue Datei") but the
+        // column structure and the size column are identical — progress still works.
+        let line = "\t    Neue Datei  \t\t       512\tC:\\src\\bild.jpg";
+        match parse_line(line) {
+            RoboLine::FileHeader { is_same, is_error, size, name } => {
+                assert!(!is_same);
+                assert!(!is_error);
+                assert_eq!(size, 512);
+                assert_eq!(name, "bild.jpg");
+            }
+            _ => panic!("expected FileHeader for a localized New File line"),
+        }
+    }
+
+    #[test]
+    fn parse_dir_row_is_skipped() {
+        // Directory rows have 3 columns — never mistaken for a file row.
+        let line = "\t  New Dir          1\tC:\\src\\sub\\";
+        assert!(matches!(parse_line(line), RoboLine::Skip));
+        // The source-root row has no status word at all.
+        let root = "\t                   3\tC:\\src\\";
+        assert!(matches!(parse_line(root), RoboLine::Skip));
+    }
+
+    #[test]
+    fn parse_extra_file_row_is_skipped() {
+        // Dest-only files are prefixed with '*' (locale-independent) — they
+        // must not count toward totals or verify mismatches.
+        let line = "\t  *EXTRA File \t\t      12\tz.txt";
+        assert!(matches!(parse_line(line), RoboLine::Skip));
+    }
+
+    #[test]
+    fn parse_timestamped_error_line() {
+        // Real error log lines carry a timestamp and a locale-independent
+        // "<code> (0x<hex>)" pair.
+        let line = "2026/08/06 21:12:33 ERROR 32 (0x00000020) Copying File C:\\tmp\\src\\locked.txt";
+        match parse_line(line) {
+            RoboLine::FileHeader { is_error, name, .. } => {
+                assert!(is_error);
+                assert_eq!(name, "locked.txt");
+            }
+            _ => panic!("expected an error FileHeader"),
+        }
+    }
+
+    #[test]
     fn remove_empty_dirs_preserves_files() {
         let base = std::env::temp_dir().join(format!("warp_test_{}", std::process::id()));
         let empty_child = base.join("empty");
@@ -763,6 +875,116 @@ mod tests {
         assert!(base.exists(), "base still has a non-empty child");
 
         // Cleanup.
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// ── Real-robocopy integration tests ──────────────────────────────────────────
+//
+// These shell out to the REAL robocopy binary (the same commands the app
+// builds) against real folders on disk, so the parser, scan pass, verify pass
+// (with its exit-code fallback), and move cleanup are validated against actual
+// robocopy output rather than hand-written fixtures. Windows-only: robocopy
+// ships with every Windows install but does not exist elsewhere.
+#[cfg(all(test, windows))]
+mod real_robocopy {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Creates a source tree with 3 files (one nested), an empty dir, and an
+    /// empty destination. Returns (base, src, dst). `name` keeps parallel test
+    /// runs from colliding on the same temp path.
+    fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("warp_robo_{name}_{}", std::process::id()));
+        let src = base.join("src");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), "hello world").unwrap();
+        std::fs::write(src.join("b.txt"), "second file").unwrap();
+        std::fs::write(src.join("sub").join("c.txt"), "nested file").unwrap();
+        std::fs::create_dir(src.join("empty")).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        (base, src, dst)
+    }
+
+    /// The exact argument set the app builds for a normal (non-USB) copy.
+    fn copy_args(src: &str, dst: &str) -> Vec<String> {
+        vec![
+            src.to_string(), dst.to_string(),
+            "/E".into(), "/NP".into(), "/R:3".into(), "/W:5".into(),
+            "/BYTES".into(), "/NJH".into(), "/NJS".into(), "/256".into(),
+            "/MT:32".into(),
+        ]
+    }
+
+    #[test]
+    fn scan_counts_the_real_tree() {
+        let (base, src, dst) = setup("scan");
+        let s = src.to_string_lossy().to_string();
+        let d = dst.to_string_lossy().to_string();
+
+        let (bytes, files) = scan(&s, &d);
+        assert_eq!(files, 3, "a.txt + b.txt + sub/c.txt; the empty dir is not a file");
+        assert!(bytes > 0);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_after_a_real_copy() {
+        let (base, src, dst) = setup("verify");
+        let s = src.to_string_lossy().to_string();
+        let d = dst.to_string_lossy().to_string();
+
+        // Do a real copy with the app's exact arguments.
+        let out = robocopy_cmd()
+            .args(&copy_args(&s, &d))
+            .output()
+            .expect("robocopy must run");
+        let code = out.status.code().unwrap();
+        assert_eq!(code, 1, "exit 1 = files copied successfully");
+        assert!(dst.join("a.txt").exists());
+        assert!(dst.join("sub").join("c.txt").exists());
+
+        // Identical trees → verify reports zero mismatches (exit code 0 + parser).
+        assert_eq!(verify_transfer(&s, &d), 0);
+
+        // Deleting a destination file must be detected as a mismatch.
+        std::fs::remove_file(dst.join("sub").join("c.txt")).unwrap();
+        assert!(verify_transfer(&s, &d) >= 1, "missing file must be caught");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn move_mode_leaves_the_source_empty() {
+        let base = std::env::temp_dir().join(format!("warp_robo_move_{}", std::process::id()));
+        let src = base.join("src");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("m.txt"), "move me").unwrap();
+
+        let s = src.to_string_lossy().to_string();
+        let d = dst.to_string_lossy().to_string();
+        let out = robocopy_cmd()
+            .args([
+                &s, &d, "/MOVE", "/E", "/NP", "/R:3", "/W:5", "/BYTES", "/NJH", "/NJS", "/256", "/MT:32",
+            ])
+            .output()
+            .expect("robocopy must run");
+        assert!(out.status.code().unwrap() < 8);
+
+        // The app's cleanup: remove only directories left fully empty.
+        remove_empty_dirs(&src);
+
+        assert!(dst.join("m.txt").exists(), "file should arrive");
+        assert!(!src.join("m.txt").exists(), "file should leave the source");
+        assert!(
+            !src.exists() || src.read_dir().unwrap().next().is_none(),
+            "source should be empty after a move"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }

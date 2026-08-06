@@ -1,4 +1,44 @@
-@import "tailwindcss";
+/* Minimal reset (replaces Tailwind's preflight, which was removed along with
+   the unused Tailwind dependency). Warp styles itself entirely through CSS
+   variables + component styles, so only the preflight essentials are kept:
+   border-box sizing, zeroed margins, and inherited fonts on form controls. */
+*,
+::before,
+::after {
+  box-sizing: border-box;
+  border-width: 0;
+  border-style: solid;
+  border-color: currentColor;
+}
+
+html {
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4, p, figure, blockquote, dl, dd {
+  margin: 0;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img, svg, video, canvas, audio, iframe, embed, object {
+  display: block;
+  vertical-align: middle;
+}
 
 /* SF Pro stack — falls back gracefully */
 :root {

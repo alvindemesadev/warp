@@ -61,8 +61,8 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 **[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website.
 
 ```
-Warp_1.0.0_x64-setup.exe    Windows installer (recommended)
-Warp_1.0.0_x64_en-US.msi   MSI installer
+Warp_1.0.1_x64-setup.exe    Windows installer (recommended)
+Warp_1.0.1_x64_en-US.msi   MSI installer
 ```
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
@@ -151,7 +151,7 @@ node scripts/build.js
 
 Output installer:
 ```
-src-tauri/target/release/bundle/nsis/Warp_1.0.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Warp_1.0.1_x64-setup.exe
 ```
 
 ### Development (hot reload)
@@ -174,7 +174,7 @@ Frontend (`.svelte`) changes appear instantly. Rust changes require a rebuild.
 |---|---|---|
 | Desktop shell | [Tauri 2](https://tauri.app) | Tiny binary (~5 MB), native Rust backend |
 | Frontend | [SvelteKit 2](https://kit.svelte.dev) + Svelte 5 | Compiler-based, no virtual DOM |
-| Styling | [Tailwind CSS v4](https://tailwindcss.com) | Zero-config, minimal output |
+| Styling | Custom CSS (design tokens + scoped component styles) | CSS variables drive the whole look; no framework |
 | Language | TypeScript + Rust (2021 edition) | Type safety on both sides |
 | File transfer engine | `robocopy` (Windows built-in) | Multi-threaded, resumable, battle-tested |
 
@@ -236,7 +236,7 @@ The robocopy child process handle is stored in `Mutex<Option<Child>>` in Tauri's
 - **OneDrive virtual files** — files not yet downloaded locally will transfer as 0-byte placeholders.
 - **Verify is structural, not hash-based** — the verify pass confirms every file exists in the destination with a matching size and timestamp (a robocopy `/L` re-compare). It does not compute byte-for-byte checksums.
 - **Throttle is approximate** — bandwidth limiting uses robocopy's `/IPG` (inter-packet gap) and runs single-threaded, so the cap is a close approximation rather than an exact ceiling.
-- **English Windows assumed** — robocopy's per-file status words ("New File", "Same", "ERROR") are localized by Windows. On a non-English Windows install, live progress parsing may be less accurate. The transfer itself still completes correctly.
+- **Non-English Windows** — robocopy's status words are localized, but Warp parses robocopy's tab-delimited column layout (identical in every locale) plus the locale-independent `N (0x…)` error codes, so progress, totals, and file names stay accurate anywhere. The Same/ERROR *classification* is best-effort word matching on non-English systems, and the verify pass falls back to robocopy's exit code so it can never silently pass when files differ.
 
 ---
 
@@ -294,7 +294,7 @@ tag runs `.github/workflows/release.yml` (free on GitHub Actions), which builds
 the installers and publishes a draft GitHub Release:
 
 ```bash
-git tag v1.0.0
+git tag v1.0.1
 git push --tags
 ```
 

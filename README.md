@@ -60,9 +60,11 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 **[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website.
 
+Current release installers (also mirrored in `docs/`):
+
 ```
-Warp_1.0.1_x64-setup.exe    Windows installer (recommended)
-Warp_1.0.1_x64_en-US.msi   MSI installer
+docs/Warp_1.0.1_x64-setup.exe    Windows installer (recommended)
+docs/Warp_1.0.1_x64_en-US.msi   MSI installer
 ```
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.

@@ -121,6 +121,8 @@ replaceIn("package.json", `"version": "1.0.1"`, `"version": "${version}"`);
 replaceIn("src/routes/+page.svelte", `let APP_VERSION = $state("1.0.1")`, `let APP_VERSION = $state("${version}")`);
 replaceIn("README.md", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
 replaceIn("README.md", `git tag v1.0.1`, `git tag v${version}`);
+// Version badge (shields.io) — keep it in sync with the release.
+replaceIn("README.md", /badge\/Version-1\.0\.1-339dff/, `badge/Version-${version}-339dff`, { all: true });
 replaceIn("scripts/readme-download.js", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
 replaceIn(".github/workflows/release.yml", `git tag v1.0.1`, `git tag v${version}`);
 replaceIn("package-lock.json", `"name": "warp",\n  "version": "1.0.1"`, `"name": "warp",\n  "version": "${version}"`);

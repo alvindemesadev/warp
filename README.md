@@ -58,9 +58,9 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 ## Download
 
-**[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website.
+**[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website (or from the [GitHub Releases](https://github.com/alvindemesadev/warp/releases) page).
 
-Current release installers (also mirrored in `docs/`):
+Current release installers (generated locally by `npm run build:win`, not committed to git):
 
 ```
 docs/Warp_1.0.1_x64-setup.exe    Windows installer (recommended)

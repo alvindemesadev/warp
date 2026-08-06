@@ -60,12 +60,12 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 **[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website (or from the [GitHub Releases](https://github.com/alvindemesadev/warp/releases) page).
 
-Current release installers (generated locally by `npm run build:win`, not committed to git):
+Current release installers (generated locally by `npm run build:win`, not committed to git). Sizes below are read from the real files by `node scripts/readme-download.js` — re-run it after each build to keep them accurate:
 
-```
-docs/Warp_1.0.1_x64-setup.exe    Windows installer (recommended)
-docs/Warp_1.0.1_x64_en-US.msi   MSI installer
-```
+| File | Size | Description |
+|---|---|---|
+| `docs/Warp_1.0.1_x64-setup.exe` | 3.6 MB | Windows installer (recommended) |
+| `docs/Warp_1.0.1_x64_en-US.msi` | 4.8 MB | MSI installer |
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
 
@@ -299,6 +299,26 @@ the installers and publishes a draft GitHub Release:
 git tag v1.0.1
 git push --tags
 ```
+
+### Cutting a release (one command)
+
+`scripts/release.js` bumps the version in **both** repositories (main + `warp-site`),
+rebuilds the installers, syncs them into `docs/` and the site's `public/`, then
+commits, tags and pushes both — so the GitHub Actions workflow and Cloudflare
+Pages deploy together:
+
+```bash
+# Preview everything the release will do (no changes made)
+npm run release -- 1.1.0
+
+# Actually cut the release
+npm run release:apply -- 1.1.0
+```
+
+It updates every version reference: `tauri.conf.json`, `Cargo.toml`/`Cargo.lock`,
+`package.json`/lockfiles, the Svelte fallback, READMEs, the Download component
+hrefs and the CI tag example. After the push, publish the draft GitHub Release
+that the workflow creates.
 
 Because the build is unsigned, Windows SmartScreen shows a one-time "Windows
 protected your PC" prompt on download — users click **More info -> Run anyway**

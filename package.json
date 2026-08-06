@@ -11,6 +11,8 @@
     "test": "vitest run",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "build:win": "node scripts/build.js",
+    "release": "node scripts/release.js",
+    "release:apply": "node scripts/release.js --apply",
     "tauri": "tauri"
   },
   "license": "MIT",

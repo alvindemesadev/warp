@@ -76,7 +76,11 @@ function replaceIn(file, from, to, { all = true, note } = {}) {
 }
 function run(cmd, args, opts = {}) {
   if (APPLY) {
-    const r = spawnSync(cmd, args, { stdio: "inherit", cwd: opts.cwd || ROOT });
+    // Windows: npm is a .cmd shim that must run under cmd.exe; everything
+    // else (git, node) spawns directly so argument quoting is preserved.
+    const r = process.platform === "win32" && cmd === "npm"
+      ? spawnSync("cmd.exe", ["/d", "/s", "/c", cmd, ...args], { stdio: "inherit", cwd: opts.cwd || ROOT })
+      : spawnSync(cmd, args, { stdio: "inherit", cwd: opts.cwd || ROOT });
     if (r.status !== 0) fail(`command failed: ${cmd} ${args.join(" ")}`);
   } else {
     console.log(`  $ ${cmd} ${args.join(" ")}${opts.cwd && opts.cwd !== ROOT ? `  (cwd: ${rel(opts.cwd)})` : ""}`);
@@ -125,13 +129,13 @@ replaceIn("README.md", `git tag v1.0.1`, `git tag v${version}`);
 replaceIn("README.md", /badge\/Version-1\.0\.1-339dff/, `badge/Version-${version}-339dff`, { all: true });
 replaceIn("scripts/readme-download.js", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
 replaceIn(".github/workflows/release.yml", `git tag v1.0.1`, `git tag v${version}`);
-replaceIn("package-lock.json", `"name": "warp",\n  "version": "1.0.1"`, `"name": "warp",\n  "version": "${version}"`);
+replaceIn("package-lock.json", /"name": "warp",\r?\n  "version": "1.0.1"/, `"name": "warp",\n  "version": "${version}"`);
 
 // warp-site repo (its own git root)
 if (fs.existsSync(path.join(SITE, ".git"))) {
   replaceIn("warp-site/package.json", `"version": "1.0.1"`, `"version": "${version}"`);
-  replaceIn("warp-site/package-lock.json", `"name": "warp-site",\n  "version": "1.0.1"`, `"name": "warp-site",\n  "version": "${version}"`);
-  replaceIn("warp-site/package-lock.json", `"name": "warp-site",\n      "version": "1.0.1"`, `"name": "warp-site",\n      "version": "${version}"`); // packages[""] entry
+  replaceIn("warp-site/package-lock.json", /"name": "warp-site",\r?\n  "version": "1.0.1"/, `"name": "warp-site",\n  "version": "${version}"`);
+  replaceIn("warp-site/package-lock.json", /"name": "warp-site",\r?\n      "version": "1.0.1"/, `"name": "warp-site",\n      "version": "${version}"`); // packages[""] entry
   replaceIn("warp-site/src/components/Download.tsx", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
   replaceIn("warp-site/README.md", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
 } else {
@@ -201,7 +205,7 @@ if (tableOut.trim()) {
   const header = "| File | Size | Description |\n|---|---|---|\n";
   const body = tableOut
     .split("\n")
-    .filter((l) => l.startsWith("|") && !l.startsWith("|---"))
+    .filter((l) => l.startsWith("| `docs/")) // data rows only — readme-download.js prints the header too
     .join("\n");
   const next = readme.replace(re, header + body + "\n");
   if (next === readme) fail("could not locate the README download-size table");

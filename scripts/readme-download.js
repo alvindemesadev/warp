@@ -17,8 +17,8 @@ function fmtBytes(bytes) {
 }
 
 const installers = [
-  { file: "Warp_1.0.1_x64-setup.exe", note: "Windows installer (recommended)" },
-  { file: "Warp_1.0.1_x64_en-US.msi", note: "MSI installer" },
+  { file: "Warp_1.1.0_x64-setup.exe", note: "Windows installer (recommended)" },
+  { file: "Warp_1.1.0_x64_en-US.msi", note: "MSI installer" },
 ];
 
 console.log("Current release installers (generated locally by `npm run build:win`, not committed to git):");

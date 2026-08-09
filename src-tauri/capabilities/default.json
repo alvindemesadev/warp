@@ -11,6 +11,7 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "dialog:allow-open",
-    "notification:default"
+    "notification:default",
+    "updater:default"
   ]
 }

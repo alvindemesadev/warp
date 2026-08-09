@@ -42,9 +42,27 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing key (see scripts/updater-manifest.js and the README).
+          # Keep in sync with the key in ~/.tauri/warp.key used for local builds.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Warp ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install."
           releaseDraft: true
           prerelease: false
+
+      # Updater: attach the .sig files and a latest.json manifest to the release.
+      # The app checks .../releases/latest/download/latest.json for updates and
+      # verifies the installer signature before installing (no SmartScreen flow).
+      - name: Generate updater manifest
+        run: node scripts/updater-manifest.js --tag ${{ github.ref_name }}
+
+      - name: Upload updater artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $files = @('latest.json') + (Get-ChildItem src-tauri/target/release/bundle/nsis/*.sig, src-tauri/target/release/bundle/msi/*.sig | ForEach-Object { $_.FullName })
+          gh release upload ${{ github.ref_name }} $files --clobber

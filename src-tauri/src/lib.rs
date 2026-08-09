@@ -695,6 +695,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             warp_file_op,
             get_path_info,
@@ -876,6 +882,80 @@ mod tests {
 
         // Cleanup.
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+// ── Updater signature test ───────────────────────────────────────────────────
+//
+// The in-app updater verifies each downloaded installer against the pubkey in
+// tauri.conf.json (plugins.updater.pubkey) using exactly this crate
+// (minisign-verify is the verifier behind tauri-plugin-updater). This test
+// re-runs that verification against the real signed artifacts from the last
+// `npm run build:win`, so a broken signing setup is caught before release.
+// It skips when no build artifacts are present (e.g. a fresh checkout).
+#[cfg(test)]
+mod updater_signing {
+    #[test]
+    fn built_installer_verifies_against_configured_pubkey() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let bundle = manifest_dir
+            .join("target")
+            .join("release")
+            .join("bundle")
+            .join("nsis");
+        let exe = bundle.join(format!("Warp_{}_x64-setup.exe", env!("CARGO_PKG_VERSION")));
+        let sig_path = bundle.join(format!("Warp_{}_x64-setup.exe.sig", env!("CARGO_PKG_VERSION")));
+
+        if !exe.exists() || !sig_path.exists() {
+            eprintln!("skipping — no signed build artifacts in target/release/bundle/nsis");
+            return;
+        }
+
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(manifest_dir.join("tauri.conf.json")).unwrap(),
+        )
+        .unwrap();
+        let wrapper = conf["plugins"]["updater"]["pubkey"]
+            .as_str()
+            .expect("plugins.updater.pubkey must be set in tauri.conf.json");
+
+        // The configured pubkey is a base64-wrapped minisign .pub file
+        // ("untrusted comment: ...\n<base64 key>") — unwrap to the key line.
+        use base64::Engine;
+        let inner = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(wrapper)
+                .expect("configured pubkey must be valid base64"),
+        )
+        .expect("configured pubkey must decode to text");
+        let key_b64 = inner
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .last()
+            .expect("configured pubkey must contain a key line");
+
+        let pk = minisign_verify::PublicKey::from_base64(key_b64)
+            .expect("configured pubkey key line must be valid");
+
+        // The .sig file is base64-wrapped the same way (the updater manifest
+        // carries this exact content) — unwrap it before parsing.
+        let sig_text = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(
+                    std::fs::read_to_string(&sig_path)
+                        .expect("failed to read the .sig file")
+                        .trim(),
+                )
+                .expect("sig file must be valid base64"),
+        )
+        .expect("sig file must decode to text");
+        let signature = minisign_verify::Signature::decode(&sig_text)
+            .expect("failed to parse the .sig file");
+        let data = std::fs::read(&exe).unwrap();
+
+        pk.verify(&data, &signature, false)
+            .expect("installer signature must verify against the configured pubkey");
     }
 }
 

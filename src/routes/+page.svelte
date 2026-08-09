@@ -6,6 +6,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { sendNotification, isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
   import { basename, fmtBytes, fmtDuration, fmtEta, fmtFiles, timeAgo } from "$lib/format";
 
   // ── Types ──────────────────────────────────────────────────────────────────
@@ -258,9 +259,14 @@
     }
     window.addEventListener("keydown", onKey);
 
+    // #27: silently check for updates a few seconds after launch.
+    const _autoCheck = setTimeout(() => checkForUpdates(true), 4000);
+
     return () => {
       unlisten.forEach(fn => fn());
       window.removeEventListener("keydown", onKey);
+      clearTimeout(_autoCheck);
+      clearTimeout(_toastTimer);
     };
   });
 
@@ -611,6 +617,74 @@
     } catch {}
   }
 
+  // ── Updater ────────────────────────────────────────────────────────────────
+  // #27: in-app updates via tauri-plugin-updater. The plugin fetches latest.json
+  // from the GitHub release and verifies the installer signature before install.
+  let updateState = $state<"idle" | "checking" | "available" | "downloading" | "installing">("idle");
+  let updateInfo = $state<{ version: string; body: string } | null>(null);
+  let _pendingUpdate: Update | null = null;
+  let showUpdateModal = $state(false);
+  let updateProgress = $state(0); // 0-100 during download
+  let toast = $state("");
+  let _toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showToast(msg: string) {
+    toast = msg;
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => (toast = ""), 3500);
+  }
+
+  async function checkForUpdates(auto = false) {
+    if (updateState === "checking" || updateState === "downloading" || updateState === "installing") return;
+    updateState = "checking";
+    try {
+      const update = await check();
+      if (update) {
+        _pendingUpdate = update;
+        updateInfo = { version: update.version, body: update.body ?? "" };
+        updateState = "available";
+        showUpdateModal = true;
+      } else {
+        updateState = "idle";
+        if (!auto) showToast(`You're up to date (v${APP_VERSION})`);
+      }
+    } catch {
+      // Offline, no release yet, or running outside Tauri — never block the UI.
+      updateState = "idle";
+      if (!auto) showToast("Couldn't check for updates — check your connection");
+    }
+  }
+
+  async function installUpdate() {
+    if (!_pendingUpdate || updateState === "downloading" || updateState === "installing") return;
+    updateState = "downloading";
+    updateProgress = 0;
+    let downloaded = 0;
+    let contentLength = 0;
+    try {
+      await _pendingUpdate.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            contentLength = event.data.contentLength ?? 0;
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            if (contentLength > 0) updateProgress = Math.min(100, Math.round((downloaded / contentLength) * 100));
+            break;
+          case "Finished":
+            updateProgress = 100;
+            break;
+        }
+      });
+      // Non-Windows or the installer didn't take over — tell the user to restart.
+      updateState = "installing";
+    } catch {
+      // On Windows the app exits during install and this rejects — the installer
+      // takes over, so treat it as success.
+      updateState = "installing";
+    }
+  }
+
   // ── Formatters ─────────────────────────────────────────────────────────────
   // Pure helpers live in $lib/format (unit-tested); see imports above.
 
@@ -689,16 +763,29 @@
     onmouseleave={(e) => (e.currentTarget.querySelector('span') as HTMLElement).style.opacity='0'}
   ><span style="opacity:0;font-size:9px;font-weight:900;color:rgba(0,0,0,0.5);line-height:1;margin-top:-1px;pointer-events:none;">−</span></button>
 
-  <!-- #26: recent button -->
-  {#if recentTransfers.length > 0 && !isProcessing && !lastSummary}
-    <button
-      onclick={() => showRecent = !showRecent}
-      title="Recent transfers"
-      style="margin-left:auto;margin-right:4px;padding:2px 6px;border-radius:5px;border:none;background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.4);font-size:9px;font-weight:600;cursor:pointer;letter-spacing:0.04em;font-family:var(--font-sf);"
-      onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.color='rgba(255,255,255,0.7)'}
-      onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.color='rgba(255,255,255,0.4)'}
-    >RECENT</button>
-  {/if}
+  <!-- #26: recent button + #27: updater chip -->
+  <div style="margin-left:auto;margin-right:4px;display:flex;align-items:center;gap:6px;">
+    {#if updateState === "checking"}
+      <span style="font-size:9px;font-weight:600;color:var(--text-tertiary);letter-spacing:0.04em;padding:2px 6px;border-radius:5px;background:rgba(255,255,255,0.07);">CHECKING…</span>
+    {:else if updateState === "available" && updateInfo}
+      <button
+        onclick={() => showUpdateModal = true}
+        title={`Update available — Warp v${updateInfo.version} is ready to install`}
+        style="padding:2px 7px;border-radius:5px;border:none;background:rgba(10,132,255,0.22);color:#64b5ff;font-size:9px;font-weight:700;cursor:pointer;letter-spacing:0.04em;font-family:var(--font-sf);animation:update-pulse 2.2s ease-in-out infinite;"
+        onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.background='rgba(10,132,255,0.35)'}
+        onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.background='rgba(10,132,255,0.22)'}
+      >⬆ UPDATE v{updateInfo.version}</button>
+    {/if}
+    {#if recentTransfers.length > 0 && !isProcessing && !lastSummary}
+      <button
+        onclick={() => showRecent = !showRecent}
+        title="Recent transfers"
+        style="padding:2px 6px;border-radius:5px;border:none;background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.4);font-size:9px;font-weight:600;cursor:pointer;letter-spacing:0.04em;font-family:var(--font-sf);"
+        onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.color='rgba(255,255,255,0.7)'}
+        onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.color='rgba(255,255,255,0.4)'}
+      >RECENT</button>
+    {/if}
+  </div>
 </div>
 
 <!-- ── Background ─────────────────────────────────────────────────────────── -->
@@ -906,6 +993,87 @@
   </div>
 {/if}
 
+<!-- ── Update modal (#27) ─────────────────────────────────────────────────── -->
+{#if showUpdateModal && updateInfo}
+  <div
+    style="position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:24px;"
+    role="dialog" aria-modal="true" aria-label="Update available" tabindex="-1"
+  >
+    <button
+      type="button" aria-label="Dismiss"
+      onclick={() => { if (updateState !== "downloading" && updateState !== "installing") showUpdateModal = false; }}
+      style="position:fixed;inset:0;border:none;padding:0;margin:0;background:rgba(0,0,0,0.65);cursor:default;"
+    ></button>
+    <div
+      style="position:relative;background:#1c1c1e;border:1px solid rgba(255,255,255,0.1);border-radius:18px;padding:24px;max-width:340px;width:100%;"
+    >
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+        <div style="width:38px;height:38px;border-radius:10px;background:rgba(10,132,255,0.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+            <path d="M10 3v10m0 0l-4-4m4 4l4-4" stroke="#0a84ff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3.5 14.5v1a2 2 0 002 2h9a2 2 0 002-2v-1" stroke="#0a84ff" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <p style="font-size:14px;font-weight:600;color:var(--text-primary);margin:0;">
+            {updateState === "downloading" ? "Downloading update…" : updateState === "installing" ? "Installing update…" : "Update available"}
+          </p>
+          <p style="font-size:11px;color:var(--text-tertiary);margin:3px 0 0;">
+            Warp v{APP_VERSION} → <strong style="color:var(--accent);">v{updateInfo.version}</strong>
+          </p>
+        </div>
+      </div>
+
+      {#if updateInfo.body && updateState !== "downloading" && updateState !== "installing"}
+        <div style="max-height:140px;overflow-y:auto;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin-bottom:14px;">
+          <p style="font-size:11px;color:var(--text-secondary);line-height:1.55;margin:0;white-space:pre-wrap;word-break:break-word;">{updateInfo.body}</p>
+        </div>
+      {/if}
+
+      {#if updateState === "downloading"}
+        <div style="margin-bottom:14px;">
+          <div style="height:4px;background:rgba(255,255,255,0.08);border-radius:100px;overflow:hidden;">
+            <div style="height:100%;width:{updateProgress > 0 ? updateProgress : 100}%;background:linear-gradient(90deg,var(--accent),#5e5ce6);border-radius:100px;transition:width 0.3s;{updateProgress === 0 ? 'animation:update-indeterminate 1.2s ease-in-out infinite;' : ''}"></div>
+          </div>
+          <p style="font-size:10px;color:var(--text-tertiary);margin:7px 0 0;text-align:center;">{updateProgress > 0 ? `${updateProgress}%` : "Downloading installer…"}</p>
+        </div>
+      {:else if updateState === "installing"}
+        <div style="display:flex;align-items:center;gap:9px;background:rgba(48,209,88,0.08);border:1px solid rgba(48,209,88,0.2);border-radius:10px;padding:10px 12px;margin-bottom:14px;">
+          <div class="animate-spin-smooth" style="width:12px;height:12px;border-radius:50%;flex-shrink:0;border:2px solid rgba(48,209,88,0.25);border-top-color:var(--green);"></div>
+          <p style="font-size:11px;color:var(--green);margin:0;">Installed — Warp will restart to finish the update.</p>
+        </div>
+      {/if}
+
+      {#if updateState !== "downloading" && updateState !== "installing"}
+        <p style="font-size:11px;color:var(--text-secondary);line-height:1.5;margin:0 0 18px;">
+          Download the latest version and install it inside Warp. Your transfers and settings are kept.
+        </p>
+        <div style="display:flex;gap:8px;">
+          <button
+            onclick={() => showUpdateModal = false}
+            style="flex:1;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:var(--text-secondary);font-size:13px;font-weight:500;cursor:pointer;"
+            onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.background='rgba(255,255,255,0.05)'}
+            onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.background='transparent'}
+          >Later</button>
+          <button
+            onclick={installUpdate}
+            style="flex:1;padding:10px;border-radius:10px;border:none;background:var(--accent);color:white;font-size:13px;font-weight:600;cursor:pointer;"
+            onmouseenter={(e)=>(e.currentTarget as HTMLElement).style.background='var(--accent-hover)'}
+            onmouseleave={(e)=>(e.currentTarget as HTMLElement).style.background='var(--accent)'}
+          >Install Update</button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+<!-- ── Toast (#27) ───────────────────────────────────────────────────────── -->
+{#if toast}
+  <div style="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:300;background:#2c2c2e;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:8px 14px;font-size:12px;color:var(--text-primary);box-shadow:0 6px 28px rgba(0,0,0,0.5);pointer-events:none;">
+    {toast}
+  </div>
+{/if}
+
 <!-- ── Main ────────────────────────────────────────────────────────────────── -->
 <main style="
   min-height:100vh;
@@ -923,7 +1091,19 @@
     <div style="text-align:center;margin-bottom:2px;">
       <h1 style="font-size:40px;font-weight:700;letter-spacing:-0.04em;color:var(--text-primary);margin:0;line-height:1;cursor:default;user-select:none;">Warp</h1>
       <p style="margin:5px 0 0;font-size:12px;font-weight:500;color:var(--text-tertiary);">
-        High-speed file transfer <span style="opacity:0.4;">v{APP_VERSION}</span>
+        High-speed file transfer
+        <button
+          onclick={() => checkForUpdates()}
+          title="Check for updates"
+          disabled={updateState === "checking"}
+          style="background:none;border:none;padding:0;margin-left:2px;font-family:var(--font-sf);font-size:12px;font-weight:500;color:var(--text-tertiary);cursor:{updateState === 'checking' ? 'default' : 'pointer'};opacity:0.6;transition:opacity 0.15s;"
+          onmouseenter={(e)=>{ if(updateState!=='checking')(e.currentTarget as HTMLElement).style.opacity='1'; (e.currentTarget as HTMLElement).style.color='var(--accent)'; }}
+          onmouseleave={(e)=>{ (e.currentTarget as HTMLElement).style.opacity='0.6'; (e.currentTarget as HTMLElement).style.color='var(--text-tertiary)'; }}
+        >v{APP_VERSION}
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none" style="display:inline;vertical-align:1px;margin-left:1px;">
+            <path d="M9 5a4 4 0 11-1.17-2.83M9 1v2.5H6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </p>
     </div>
 
@@ -1471,6 +1651,15 @@
   :global(::-webkit-scrollbar-track) { background: transparent; }
   :global(::-webkit-scrollbar-thumb) { background: rgba(255,255,255,0.12); border-radius: 4px; }
   :global(button:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @keyframes update-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(10,132,255,0.35); }
+    50% { box-shadow: 0 0 0 4px rgba(10,132,255,0); }
+  }
+  @keyframes update-indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(300%); }
+  }
 
   /* Transfer options — segmented controls */
   .opts { display: flex; flex-direction: column; gap: 12px; align-items: center; }

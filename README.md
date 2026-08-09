@@ -50,6 +50,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 | **Verify mode** | Optional post-transfer re-compare to confirm every file arrived |
 | **Bandwidth throttle** | Cap transfer speed (Unlimited / 100 / 25 / 5 MB/s, or a custom value) to leave headroom |
 | **System notifications** | Notified when a background transfer finishes |
+| **In-app updates** | "Check for updates" — signature-verified installs straight from GitHub Releases, no re-downloading |
 | **Keyboard shortcuts** | Enter, Esc, Ctrl+O, Ctrl+Shift+O |
 | **Sub-second duration** | Shows `0.3s` instead of `0s` |
 | **Version display** | App version shown in the UI |
@@ -205,7 +206,8 @@ warp/
 │   ├── tauri.conf.json         # App config (window, bundle, permissions)
 │   └── capabilities/           # Tauri permission system
 ├── scripts/
-│   └── build.js                # Build script (auto-finds vcvars64)
+│   ├── build.js                # Build script (auto-finds vcvars64, signing key)
+│   └── updater-manifest.js     # Generates latest.json for the in-app updater
 ├── .github/workflows/release.yml  # Tagged release builds (unsigned)
 └── README.md
 ```
@@ -300,6 +302,38 @@ the installers and publishes a draft GitHub Release:
 git tag v1.0.1
 git push --tags
 ```
+
+### In-app updates
+
+Warp can update itself: clicking **Check for updates** (or the version in the
+header) fetches `latest.json` from the latest GitHub Release, verifies the
+downloaded installer against a cryptographic signature, and installs it in one
+click — no SmartScreen prompt, no browser tab. It also checks automatically a
+few seconds after launch (silently, only showing UI if an update exists).
+
+This uses Tauri's updater plugin, which **requires signed update artifacts** —
+that's a separate free key from the code-signing certificate, not a paid cert:
+
+1. **Generate the key once** (done — stored in `~/.tauri/warp.key`):
+   ```cmd
+   npm run tauri signer generate -w %USERPROFILE%\.tauri\warp.key --ci
+   ```
+2. **Add the same private key as GitHub secrets** so CI can sign the artifacts:
+   `TAURI_SIGNING_PRIVATE_KEY` (key file contents) and
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty — the key has no password).
+   ⚠ Back up `warp.key` — if it's lost, installed apps can never update again.
+3. The public key (safe to share) lives in `tauri.conf.json`
+   (`plugins.updater.pubkey`). Never commit the private key.
+
+Local builds (`npm run build:win`) pick up `~/.tauri/warp.key` automatically
+and produce the `.sig` files; the release workflow attaches them plus a
+`latest.json` manifest to each release. The app's update endpoint is
+`https://github.com/alvindemesadev/warp/releases/latest/download/latest.json`
+(configured in `plugins.updater.endpoints`).
+
+The private key must be in your **environment variables** during builds — `.env`
+files are ignored by the Tauri signer. `scripts/build.js` handles this for local
+builds by exporting the key path automatically.
 
 ### Cutting a release (one command)
 

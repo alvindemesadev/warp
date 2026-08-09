@@ -20,5 +20,8 @@ docs/*.msi
 build.bat
 scripts/_build_tmp.bat
 
+# Updater manifest (generated per-release by scripts/updater-manifest.js and uploaded to the GitHub release)
+latest.json
+
 # Landing site has its own repository (alvindemesadev/warp-site)
 warp-site/

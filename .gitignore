@@ -29,3 +29,7 @@ warp-site/
 # Local session tooling (never commit)
 .freebuff/
 
+
+# Site preview build output (unused; sites use static screenshots)
+site-preview-dist/
+

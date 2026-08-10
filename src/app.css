@@ -20,6 +20,11 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
+  /* The app font lives on :root as --font-sf but is applied per-element;
+     fixed-position overlays (modals, toasts) escape <main>, so default the
+     body to the SF stack too — otherwise they fall back to a serif system font. */
+  font-family: var(--font-sf);
+  -webkit-font-smoothing: antialiased;
 }
 
 h1, h2, h3, h4, p, figure, blockquote, dl, dd {

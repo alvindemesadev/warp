@@ -11,6 +11,7 @@
     "test": "vitest run",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "build:win": "node scripts/build.js",
+    "preview:build": "vite build --config vite.preview.config.ts && node scripts/preview-html.js",
     "release": "node scripts/release.js",
     "release:apply": "node scripts/release.js --apply",
     "tauri": "tauri"

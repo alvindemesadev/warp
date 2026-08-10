@@ -166,6 +166,9 @@ if (fs.existsSync(path.join(SITE, ".git"))) ensureTagIsFree(SITE);
 
 console.log(`\n=== 2/6 Rebuild installers (npm run build:win) ===`);
 run("npm", ["run", "build:win"], { cwd: ROOT });
+// Real app UI for the marketing site — rebuild so the embedded preview
+// always matches the release (version is baked in from tauri.conf.json).
+run("npm", ["run", "preview:build"], { cwd: ROOT });
 if (fs.existsSync(path.join(SITE, ".git"))) {
   run("npm", ["install", "--package-lock-only"], { cwd: SITE });
 }
@@ -196,6 +199,11 @@ if (fs.existsSync(path.join(SITE, ".git"))) {
   for (const src of [exePath, msiPath]) {
     if (!fs.existsSync(src)) continue; // dry run — build hasn't run yet
     copy(src, path.join(SITE_PUBLIC, path.basename(src)));
+  }
+  // Real-app preview bundle (built in step 2) — the site embeds this in an iframe.
+  for (const f of ["site-preview.html", "site-preview.js", "site-preview.css"]) {
+    const src = path.join(ROOT, "site-preview-dist", f);
+    if (fs.existsSync(src)) copy(src, path.join(SITE_PUBLIC, f));
   }
 }
 

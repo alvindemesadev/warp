@@ -28,3 +28,7 @@ site-preview-dist/
 
 # Landing site has its own repository (alvindemesadev/warp-site)
 warp-site/
+
+# Local session tooling (never commit)
+.freebuff/
+

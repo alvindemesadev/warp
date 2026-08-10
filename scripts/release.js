@@ -30,6 +30,11 @@ const BUNDLE_MSI = path.join(ROOT, "src-tauri/target/release/bundle/msi");
 const DOCS = path.join(ROOT, "docs");
 const SITE_PUBLIC = path.join(SITE, "public");
 
+// Current version, read from tauri.conf.json (the source of truth that
+// release.js bumps). Every "from" pattern below uses this instead of a
+// hardcoded version, so successive releases keep working.
+const CURRENT = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8")).version;
+
 const exeName = (v) => `Warp_${v}_x64-setup.exe`;
 const msiName = (v) => `Warp_${v}_x64_en-US.msi`;
 
@@ -45,6 +50,9 @@ function fail(msg) {
 if (!version) fail("Usage: node scripts/release.js <version> [--apply]");
 if (!/^\d+\.\d+\.\d+$/.test(version)) {
   fail(`"${version}" is not a valid semver — use e.g. 1.1.0 (no "v" prefix).`);
+}
+if (version === CURRENT) {
+  fail(`version ${version} is already the current version — bump to something newer.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +108,8 @@ function capture(cmd, args, opts = {}) {
 function pruneOldInstallers(dir) {
   if (!fs.existsSync(dir)) return;
   for (const f of fs.readdirSync(dir)) {
-    if (!/Warp_\d+\.\d+\.\d+_x64(_en-US)?\.(exe|msi)$/.test(f)) continue;
+    // Matches Warp_1.2.3_x64-setup.exe and Warp_1.2.3_x64_en-US.msi.
+    if (!/Warp_\d+\.\d+\.\d+_x64(-setup)?(_en-US)?\.(exe|msi)$/.test(f)) continue;
     if (f === exeName(version) || f === msiName(version)) continue;
     console.log(`  - ${rel(path.join(dir, f))}`);
     if (APPLY) fs.unlinkSync(path.join(dir, f));
@@ -118,26 +127,26 @@ function copy(src, dest) {
 console.log(`\n=== 1/6 Bump version to ${version} ===`);
 
 // Main repo
-replaceIn("src-tauri/tauri.conf.json", `"version": "1.0.1"`, `"version": "${version}"`, { note: "tauri.conf.json version" });
-replaceIn("src-tauri/Cargo.toml", `version = "1.0.1"`, `version = "${version}"`);
-replaceIn("src-tauri/Cargo.lock", `name = "warp"\nversion = "1.0.1"`, `name = "warp"\nversion = "${version}"`, { all: false });
-replaceIn("package.json", `"version": "1.0.1"`, `"version": "${version}"`);
-replaceIn("src/routes/+page.svelte", `let APP_VERSION = $state("1.0.1")`, `let APP_VERSION = $state("${version}")`);
-replaceIn("README.md", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
-replaceIn("README.md", `git tag v1.0.1`, `git tag v${version}`);
+replaceIn("src-tauri/tauri.conf.json", `"version": "${CURRENT}"`, `"version": "${version}"`, { note: "tauri.conf.json version" });
+replaceIn("src-tauri/Cargo.toml", `version = "${CURRENT}"`, `version = "${version}"`);
+replaceIn("src-tauri/Cargo.lock", new RegExp(`name = "warp"\\r?\\nversion = "${CURRENT}"`), `name = "warp"\nversion = "${version}"`, { all: false });
+replaceIn("package.json", `"version": "${CURRENT}"`, `"version": "${version}"`);
+replaceIn("src/routes/+page.svelte", `let APP_VERSION = $state("${CURRENT}")`, `let APP_VERSION = $state("${version}")`);
+replaceIn("README.md", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
+replaceIn("README.md", `git tag v${CURRENT}`, `git tag v${version}`);
 // Version badge (shields.io) — keep it in sync with the release.
-replaceIn("README.md", /badge\/Version-1\.0\.1-339dff/, `badge/Version-${version}-339dff`, { all: true });
-replaceIn("scripts/readme-download.js", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
-replaceIn(".github/workflows/release.yml", `git tag v1.0.1`, `git tag v${version}`);
-replaceIn("package-lock.json", /"name": "warp",\r?\n  "version": "1.0.1"/, `"name": "warp",\n  "version": "${version}"`);
+replaceIn("README.md", new RegExp(`badge/Version-${CURRENT.replace(/\./g, "\\.")}-339dff`), `badge/Version-${version}-339dff`, { all: true });
+replaceIn("scripts/readme-download.js", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
+replaceIn(".github/workflows/release.yml", `git tag v${CURRENT}`, `git tag v${version}`);
+replaceIn("package-lock.json", new RegExp(`"name": "warp",\\r?\\n  "version": "${CURRENT}"`), `"name": "warp",\n  "version": "${version}"`);
 
 // warp-site repo (its own git root)
 if (fs.existsSync(path.join(SITE, ".git"))) {
-  replaceIn("warp-site/package.json", `"version": "1.0.1"`, `"version": "${version}"`);
-  replaceIn("warp-site/package-lock.json", /"name": "warp-site",\r?\n  "version": "1.0.1"/, `"name": "warp-site",\n  "version": "${version}"`);
-  replaceIn("warp-site/package-lock.json", /"name": "warp-site",\r?\n      "version": "1.0.1"/, `"name": "warp-site",\n      "version": "${version}"`); // packages[""] entry
-  replaceIn("warp-site/src/components/Download.tsx", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
-  replaceIn("warp-site/README.md", `Warp_1.0.1_x64`, `Warp_${version}_x64`, { all: true });
+  replaceIn("warp-site/package.json", `"version": "${CURRENT}"`, `"version": "${version}"`);
+  replaceIn("warp-site/package-lock.json", new RegExp(`"name": "warp-site",\\r?\\n  "version": "${CURRENT}"`), `"name": "warp-site",\n  "version": "${version}"`);
+  replaceIn("warp-site/package-lock.json", new RegExp(`"name": "warp-site",\\r?\\n      "version": "${CURRENT}"`), `"name": "warp-site",\n      "version": "${version}"`); // packages[""] entry
+  replaceIn("warp-site/src/components/Download.tsx", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
+  replaceIn("warp-site/README.md", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
 } else {
   console.log(`  ! warp-site/.git not found — skipping site version bump`);
 }
@@ -175,7 +184,7 @@ for (const src of [exePath, msiPath]) {
     // In a dry run the build hasn't run yet — the real check happens after
     // the apply-mode build. Verify the old installer exists instead, so we
     // know the build toolchain has produced artifacts before.
-    const old = path.join(path.dirname(src), path.basename(src).replace(version, "1.0.1"));
+    const old = path.join(path.dirname(src), path.basename(src).replace(version, CURRENT));
     if (!fs.existsSync(old)) fail(`no installer found in ${rel(path.dirname(src))} (run build:win first)`);
     continue;
   }

@@ -67,7 +67,7 @@ Current release installers (generated locally by `npm run build:win`, not commit
 | File | Size | Description |
 |---|---|---|
 | `docs/Warp_1.1.0_x64-setup.exe` | 4.6 MB | Windows installer (recommended) |
-| `docs/Warp_1.1.0_x64_en-US.msi` | 6.2 MB | MSI installer |
+| `docs/Warp_1.1.0_x64_en-US.msi` | n/a | MSI installer |
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
 

@@ -1,6 +1,6 @@
 [package]
 name = "warp"
-version = "1.1.1"
+version = "1.1.2"
 description = "High-speed file transfer desktop app"
 authors = ["Alvin"]
 edition = "2021"

@@ -217,8 +217,15 @@ if (tableOut.trim()) {
     .filter((l) => l.startsWith("| `docs/")) // data rows only — readme-download.js prints the header too
     .join("\n");
   const next = readme.replace(re, header + body + "\n");
-  if (next === readme) fail("could not locate the README download-size table");
-  write(readmePath, next);
+  if (next === readme && !re.test(readme)) {
+    fail("could not locate the README download-size table");
+  }
+  if (next === readme) {
+    // The table already matches the real on-disk sizes — nothing to update.
+    console.log("  ! README download-size table already up to date");
+  } else {
+    write(readmePath, next);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -693,7 +693,7 @@
   // tauri.conf.json / Cargo.toml) so the header can't drift from the packaged
   // build. The literal below is only a fallback for plain-browser dev
   // (`npm run dev` without Tauri) and the initial paint before it resolves.
-  let APP_VERSION = $state("1.1.1");
+  let APP_VERSION = $state("1.1.2");
 
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },

@@ -1092,18 +1092,6 @@
       <h1 style="font-size:40px;font-weight:700;letter-spacing:-0.04em;color:var(--text-primary);margin:0;line-height:1;cursor:default;user-select:none;">Warp</h1>
       <p style="margin:5px 0 0;font-size:12px;font-weight:500;color:var(--text-tertiary);">
         High-speed file transfer
-        <button
-          onclick={() => checkForUpdates()}
-          title="Check for updates"
-          disabled={updateState === "checking"}
-          style="background:none;border:none;padding:0;margin-left:2px;font-family:var(--font-sf);font-size:12px;font-weight:500;color:var(--text-tertiary);cursor:{updateState === 'checking' ? 'default' : 'pointer'};opacity:0.6;transition:opacity 0.15s;"
-          onmouseenter={(e)=>{ if(updateState!=='checking')(e.currentTarget as HTMLElement).style.opacity='1'; (e.currentTarget as HTMLElement).style.color='var(--accent)'; }}
-          onmouseleave={(e)=>{ (e.currentTarget as HTMLElement).style.opacity='0.6'; (e.currentTarget as HTMLElement).style.color='var(--text-tertiary)'; }}
-        >v{APP_VERSION}
-          <svg width="9" height="9" viewBox="0 0 10 10" fill="none" style="display:inline;vertical-align:1px;margin-left:1px;">
-            <path d="M9 5a4 4 0 11-1.17-2.83M9 1v2.5H6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
       </p>
     </div>
 
@@ -1634,6 +1622,16 @@
       {:else if lastSummary}Esc to reset
       {:else}Ctrl+O source · Ctrl+Shift+O destination · Enter to start{/if}
     </p>
+
+    <!-- Check for updates — kept out of the header so screenshots never show a version -->
+    <button
+      onclick={() => checkForUpdates()}
+      disabled={updateState === "checking"}
+      title="Check for updates"
+      style="display:block;margin:6px auto 0;background:none;border:none;padding:2px 8px;font-size:9px;font-weight:500;color:rgba(255,255,255,0.18);cursor:{updateState === 'checking' ? 'default' : 'pointer'};font-family:var(--font-sf);letter-spacing:0.02em;transition:color 0.15s;"
+      onmouseenter={(e)=>{ if(updateState!=='checking'){ (e.currentTarget as HTMLElement).style.color='var(--accent)'; (e.currentTarget as HTMLElement).style.opacity='1'; } }}
+      onmouseleave={(e)=>{ (e.currentTarget as HTMLElement).style.color='rgba(255,255,255,0.18)'; }}
+    >{updateState === "checking" ? "Checking…" : "Check for updates"}</button>
 
   </div>
 </main>

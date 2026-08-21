@@ -16,9 +16,16 @@ function fmtBytes(bytes) {
   return mb >= 10 ? `${Math.round(mb)} MB` : `${mb.toFixed(1)} MB`;
 }
 
+const conf = JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"));
+const version = conf.version;
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  console.error(`Invalid version in tauri.conf.json: ${version}`);
+  process.exit(1);
+}
+
 const installers = [
-  { file: "Warp_1.1.2_x64-setup.exe", note: "Windows installer (recommended)" },
-  { file: "Warp_1.1.2_x64_en-US.msi", note: "MSI installer" },
+  { file: `Warp_${version}_x64-setup.exe`, note: "Windows installer (recommended)" },
+  { file: `Warp_${version}_x64_en-US.msi`, note: "MSI installer" },
 ];
 
 console.log("Current release installers (generated locally by `npm run build:win`, not committed to git):");

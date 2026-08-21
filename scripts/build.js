@@ -35,9 +35,11 @@ if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
   if (conf?.bundle?.createUpdaterArtifacts) {
     console.warn(
       "\nWARNING: createUpdaterArtifacts is enabled but no signing key was found.\n" +
-      `  Expected: ${keyPath}\n` +
+      `  Expected: ${keyPath} (or TAURI_SIGNING_PRIVATE_KEY env var)\n` +
       "  The build will succeed but produce NO .sig files, so in-app updates won't work.\n" +
-      "  Generate one with: npm run tauri signer generate -w ~/.tauri/warp.key\n"
+      "  Generate one with: npm run tauri signer generate -w ~/.tauri/warp.key --ci\n" +
+      "  Then set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty) as GitHub secrets.\n" +
+      "  See README.md \"In-app updates\" + https://v2.tauri.app/plugin/updater/\n"
     );
   }
 }
@@ -48,6 +50,16 @@ if (!isWindows) {
     stdio: "inherit",
     shell: true,
   });
+  if (result.status === 0) {
+    // Best-effort: generate latest.json if signing artifacts exist
+    const updater = spawnSync("node", ["scripts/updater-manifest.js"], {
+      stdio: "inherit",
+      shell: true,
+    });
+    if (updater.status !== 0) {
+      console.warn("Updater manifest not generated — missing .sig? (see above)");
+    }
+  }
   process.exit(result.status ?? 1);
 }
 
@@ -88,5 +100,16 @@ const result = spawnSync("cmd", ["/c", batPath], {
 try {
   fs.unlinkSync(batPath);
 } catch {}
+
+if (result.status === 0) {
+  const updater = spawnSync("node", ["scripts/updater-manifest.js"], {
+    stdio: "inherit",
+    cwd: path.join(__dirname, ".."),
+    shell: true,
+  });
+  if (updater.status !== 0) {
+    console.warn("Updater manifest not generated — missing .sig? (see above)");
+  }
+}
 
 process.exit(result.status ?? 1);

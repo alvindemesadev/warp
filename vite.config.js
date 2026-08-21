@@ -24,8 +24,8 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri` and the external warp-site checkout
+      ignored: ["**/src-tauri/**", "**/warp-site/**", "**/.freebuff/**"],
     },
   },
 }));

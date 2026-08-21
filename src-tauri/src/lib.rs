@@ -57,22 +57,26 @@ pub struct PathMeta {
 // ── Drive type detection (Windows) ──────────────────────────────────────────
 
 #[cfg(windows)]
-extern "system" {
-    #[link_name = "GetDriveTypeW"]
-    fn winapi_GetDriveTypeW(lpRootPathName: *const u16) -> u32;
-}
-
-#[cfg(windows)]
 fn is_removable_drive(drive: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
     let root = format!(r"{}\", drive.trim_end_matches(':'));
     let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
     const DRIVE_REMOVABLE: u32 = 2;
-    unsafe { winapi_GetDriveTypeW(wide.as_ptr()) == DRIVE_REMOVABLE }
+    unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) == DRIVE_REMOVABLE }
 }
 
 #[cfg(not(windows))]
 fn is_removable_drive(_drive: &str) -> bool {
     false
+}
+
+/// Recover from a poisoned mutex without panicking — a prior panic in another
+/// thread should not permanently break cancel/progress. Returns the inner guard.
+fn lock_process<'a>(
+    state: &'a ActiveProcess,
+) -> std::sync::MutexGuard<'a, Option<std::process::Child>> {
+    state.0.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ── Command factory ───────────────────────────────────────────────────────────
@@ -131,14 +135,27 @@ fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
 }
 
 fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            if let Ok(m) = e.metadata() {
+    // Iterative to avoid stack overflow on deeply nested trees and to skip symlink loops.
+    let mut stack = vec![std::path::PathBuf::from(dir)];
+    while let Some(current) = stack.pop() {
+        let rd = match std::fs::read_dir(&current) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            // Skip symlinks entirely — they can create cycles.
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_symlink() {
+                    continue;
+                }
+            }
+            if let Ok(m) = entry.metadata() {
                 if m.is_file() {
                     *count += 1;
                     *bytes += m.len();
                 } else if m.is_dir() {
-                    walk_dir(&e.path().to_string_lossy(), count, bytes);
+                    stack.push(path);
                 }
             }
         }
@@ -187,7 +204,7 @@ fn remove_empty_dirs(dir: &std::path::Path) -> bool {
 #[tauri::command]
 async fn cancel_warp(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<ActiveProcess>();
-    let mut guard = state.0.lock().unwrap();
+    let mut guard = lock_process(&state);
     if let Some(child) = guard.as_mut() {
         let _ = child.kill();
         let _ = child.wait();
@@ -394,12 +411,12 @@ fn verify_transfer(source: &str, destination: &str) -> u32 {
     // be copied (identical trees), anything else = the comparison was unable to
     // prove the trees identical (files differ, or the verify pass itself errored
     // with an 8+ code). Backs up the parser on non-English systems so verify can
-    // never report a false "all clear".
-    let code = out.status.code().unwrap_or(0);
-    if code == 0 {
-        0
-    } else {
-        mismatches.max(1)
+    // never report a false "all clear". A missing exit code (killed) is treated as failure.
+    let code = out.status.code();
+    match code {
+        Some(0) => 0,
+        Some(_) => mismatches.max(1),
+        None => mismatches.max(1),
     }
 }
 
@@ -541,7 +558,7 @@ fn warp_file_op_sync(
 
     {
         let state = app.state::<ActiveProcess>();
-        *state.0.lock().unwrap() = Some(child);
+        *lock_process(&state) = Some(child);
     }
 
     let start = Instant::now();
@@ -564,13 +581,14 @@ fn warp_file_op_sync(
 
     // For indeterminate mode: emit a "pulse" every N files so UI shows activity
     let mut indeterminate_tick: u32 = 0;
+    let mut last_emit_time = Instant::now();
 
     if let Some(stdout) = stdout {
         for line in BufReader::new(stdout).lines().flatten() {
-            // Cancelled check
+            // Cancelled check — poison-safe.
             {
                 let state = app.state::<ActiveProcess>();
-                if state.0.lock().unwrap().is_none() {
+                if lock_process(&state).is_none() {
                     summary.cancelled = true;
                     break;
                 }
@@ -609,8 +627,12 @@ fn warp_file_op_sync(
                         overall_pct(bytes_done, total_bytes)
                     };
 
-                    if pct != last_emitted || !name.is_empty() {
+                    // Throttle IPC: emit on % change or at most every 100 ms to avoid flooding UI on many small files.
+                    let should_emit = pct != last_emitted
+                        || last_emit_time.elapsed().as_millis() >= 100;
+                    if should_emit {
                         last_emitted = pct;
+                        last_emit_time = Instant::now();
                         let _ = window.emit("warp-progress", WarpProgress {
                             percentage: pct,
                             current_file: name,
@@ -636,23 +658,36 @@ fn warp_file_op_sync(
         }
     }
 
-    // Get exit code
-    let code = {
+    // Get exit code — distinguish signal termination (code == None) from success.
+    let (code, was_terminated_without_code) = {
         let state = app.state::<ActiveProcess>();
-        let mut guard = state.0.lock().unwrap();
-        let c = if let Some(ref mut child) = *guard {
-            child.wait().ok().and_then(|s| s.code()).unwrap_or(0)
+        let mut guard = lock_process(&state);
+        let (c, terminated) = if let Some(ref mut child) = *guard {
+            match child.wait() {
+                Ok(status) => match status.code() {
+                    Some(v) => (v, false),
+                    None => (-1, true), // killed by signal / no exit code
+                },
+                Err(_) => (-1, true),
+            }
         } else {
-            0
+            // Already cancelled and cleared
+            (0, false)
         };
         *guard = None;
-        c
+        (c, terminated)
     };
 
     summary.duration_ms = start.elapsed().as_millis() as u64;
     summary.error_code = code;
 
     if summary.cancelled { return Ok(summary); }
+
+    if was_terminated_without_code {
+        summary.error_message =
+            "Transfer terminated unexpectedly (no exit code — process was killed)".to_string();
+        return Ok(summary);
+    }
 
     if code < 8 {
         // For move mode: robocopy /MOVE removes the files it moves but leaves

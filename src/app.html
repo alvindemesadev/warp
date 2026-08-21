@@ -9,17 +9,5 @@
   </head>
   <body data-sveltekit-preload-data="hover">
     <div style="display: contents">%sveltekit.body%</div>
-    <script>
-      // TEMP-DEV-SHIM: browser-only mock of the Tauri runtime so the SPA can be
-      // previewed without the desktop app. REMOVE AFTER VISUAL VERIFICATION.
-      if (!window.__TAURI_INTERNALS__) {
-        window.__TAURI_INTERNALS__ = {
-          metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
-          transformCallback: () => 1,
-          invoke: () => Promise.reject(new Error("no tauri runtime")),
-          convertFileSrc: (p) => p,
-        };
-      }
-    </script>
   </body>
 </html>

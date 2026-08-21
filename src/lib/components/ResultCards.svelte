@@ -39,6 +39,11 @@
       {/each}
     </div>
   </div>
+  {#if mode === "move" && summary.skipped > 0 && !summary.cancelled}
+    <div class="info-box">
+      <p class="info-text">ℹ︎ {summary.skipped.toLocaleString()} file{summary.skipped===1?' was':'s were'} skipped (already exists) and remain in the source. Only {summary.transferred.toLocaleString()} moved.</p>
+    </div>
+  {/if}
   {#if summary.errorMessage}
     <div class="error-box">
       <p class="error-title">Transfer Error (code {summary.errorCode})</p>
@@ -85,6 +90,8 @@
   .stat--border { border-right: 1px solid var(--glass-border); }
   .stat-value { font-size: 22px; font-weight: 700; margin: 0; line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
   .stat-label { font-size: 9px; font-weight: 600; color: var(--text-tertiary); margin: 4px 0 0; letter-spacing: 0.04em; text-transform: uppercase; }
+  .info-box { background: rgba(10,132,255,0.08); border: 1px solid rgba(10,132,255,0.2); border-radius: 12px; padding: 10px 14px; }
+  .info-text { font-size: 11px; color: var(--accent); margin: 0; line-height: 1.5; }
   .error-box { background: rgba(255,69,58,0.08); border: 1px solid rgba(255,69,58,0.2); border-radius: 12px; padding: 10px 14px; }
   .error-title { font-size: 10px; font-weight: 700; color: var(--red); letter-spacing: 0.04em; text-transform: uppercase; margin: 0 0 4px; }
   .error-msg { font-size: 11px; color: rgba(255,69,58,0.8); margin: 0; line-height: 1.5; }

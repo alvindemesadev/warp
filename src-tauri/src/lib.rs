@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -71,6 +71,109 @@ fn is_removable_drive(_drive: &str) -> bool {
     false
 }
 
+#[cfg(windows)]
+fn is_fat32_volume(path: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+    let drive = extract_drive(path);
+    if drive.is_empty() {
+        return false;
+    }
+    let root = format!(r"{}\", drive.trim_end_matches(':'));
+    let wide_root: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut fs_buf = [0u16; 32];
+    unsafe {
+        let res = GetVolumeInformationW(
+            PCWSTR(wide_root.as_ptr()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut fs_buf),
+        );
+        if res.is_err() {
+            return false;
+        }
+        let len = fs_buf.iter().position(|&c| c == 0).unwrap_or(fs_buf.len());
+        let name = String::from_utf16_lossy(&fs_buf[..len]);
+        name.eq_ignore_ascii_case("FAT32")
+    }
+}
+
+#[cfg(not(windows))]
+fn is_fat32_volume(_path: &str) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn free_bytes_available(path: &str) -> Option<u64> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut free: u64 = 0;
+    unsafe {
+        let res = GetDiskFreeSpaceExW(
+            PCWSTR(wide.as_ptr()),
+            Some(&mut free as *mut u64),
+            None,
+            None,
+        );
+        if res.is_ok() { Some(free) } else { None }
+    }
+}
+
+#[cfg(not(windows))]
+fn free_bytes_available(_path: &str) -> Option<u64> {
+    None
+}
+
+/// Convert to `\\?\` long-path form for Windows MAX_PATH bypass.
+/// `C:\very\long` → `\\?\C:\very\long`, `\\server\share` → `\\?\UNC\server\share`. No-op on non-Windows or already prefixed.
+fn to_long_path(p: &str) -> String {
+    if p.starts_with(r"\\?\") {
+        return p.to_string();
+    }
+    if p.starts_with(r"\\") {
+        return format!(r"\\?\UNC\{}", &p[2..]);
+    }
+    if p.len() > 240 && std::path::Path::new(p).is_absolute() {
+        return format!(r"\\?\{}", p);
+    }
+    p.to_string()
+}
+
+/// Returns largest file size in `dir` (or 0 if none). Iterative, skips symlinks, caps early at >4GB for FAT32 preflight.
+fn max_file_size(dir: &str) -> u64 {
+    let mut max = 0u64;
+    let mut stack = vec![std::path::PathBuf::from(to_long_path(dir))];
+    while let Some(current) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&current) {
+            for entry in rd.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_symlink() {
+                        continue;
+                    }
+                }
+                if let Ok(m) = entry.metadata() {
+                    if m.is_file() {
+                        let sz = m.len();
+                        if sz > max {
+                            max = sz;
+                            if max > 4_294_967_295 {
+                                // Already over FAT32 limit, can early-return
+                                return max;
+                            }
+                        }
+                    } else if m.is_dir() {
+                        stack.push(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    max
+}
+
 /// Recover from a poisoned mutex without panicking — a prior panic in another
 /// thread should not permanently break cancel/progress. Returns the inner guard.
 fn lock_process<'a>(
@@ -79,13 +182,28 @@ fn lock_process<'a>(
     state.0.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn log_event(msg: &str) {
+    let path = std::env::temp_dir().join("warp.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|_| "0".into());
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+}
+
 // ── Command factory ───────────────────────────────────────────────────────────
 
 fn robocopy_cmd() -> Command {
     let mut c = Command::new("robocopy");
     #[cfg(windows)]
     c.creation_flags(CREATE_NO_WINDOW);
-    c.stdout(Stdio::piped()).stderr(Stdio::null());
+    c.stdout(Stdio::piped()).stderr(Stdio::piped());
     c
 }
 
@@ -100,7 +218,7 @@ async fn get_path_info(path: String) -> Result<PathMeta, String> {
 }
 
 fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(to_long_path(&path)).map_err(|e| e.to_string())?;
 
     // Extract drive letter (Windows: "C:", "D:", etc.)
     let drive = std::path::Path::new(&path)
@@ -136,11 +254,15 @@ fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
 
 fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
     // Iterative to avoid stack overflow on deeply nested trees and to skip symlink loops.
-    let mut stack = vec![std::path::PathBuf::from(dir)];
+    // Use \\?\ long-path form on Windows to bypass MAX_PATH.
+    let mut stack = vec![std::path::PathBuf::from(to_long_path(dir))];
     while let Some(current) = stack.pop() {
         let rd = match std::fs::read_dir(&current) {
             Ok(rd) => rd,
-            Err(_) => continue,
+            Err(e) => {
+                log_event(&format!("walk_dir: cannot read {}: {}", current.display(), e));
+                continue;
+            }
         };
         for entry in rd.flatten() {
             let path = entry.path();
@@ -168,6 +290,10 @@ fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
 /// This is used after a `/MOVE` to clean up leftover empty folders WITHOUT
 /// risking deletion of files that were skipped and intentionally left behind.
 fn remove_empty_dirs(dir: &std::path::Path) -> bool {
+    // Handle long paths via \\?\ prefix
+    let dir_str = dir.to_string_lossy().to_string();
+    let long = std::path::PathBuf::from(to_long_path(&dir_str));
+    let dir = long.as_path();
     if !dir.is_dir() {
         return false;
     }
@@ -188,6 +314,7 @@ fn remove_empty_dirs(dir: &std::path::Path) -> bool {
             }
         }
     } else {
+        log_event(&format!("remove_empty_dirs: cannot read {}", dir.display()));
         // Couldn't read the directory; don't attempt to remove it.
         return false;
     }
@@ -227,6 +354,13 @@ fn fmt_speed(bps: u64) -> String {
     else                     { format!("{} B/s", bps) }
 }
 
+fn fmt_bytes_pretty(b: u64) -> String {
+    if b >= 1_073_741_824 { format!("{:.1} GB", b as f64 / 1_073_741_824.0) }
+    else if b >= 1_048_576 { format!("{:.1} MB", b as f64 / 1_048_576.0) }
+    else if b >= 1_024 { format!("{:.0} KB", b as f64 / 1_024.0) }
+    else { format!("{} B", b) }
+}
+
 /// Convert a target throughput (MB/s) into robocopy's `/IPG` inter-packet gap
 /// in milliseconds. Robocopy moves data in 64 KB blocks, so blocks/sec = MB/s * 16
 /// and the gap between blocks is 1000 / (MB/s * 16) = 62.5 / MB/s ms (min 1).
@@ -264,18 +398,24 @@ fn is_path_on_usb(path: &str) -> bool {
 }
 
 /// Translate robocopy exit codes to human-readable messages.
-/// Codes 0-7 are success/info. 8+ are real failures.
+/// Codes 0-7 are success/info. 8+ are real failures. See `robocopy /?` bitmask:
+/// 1=files copied, 2=extra files, 4=mismatched, 8=failed, 16=serious error.
 fn robocopy_exit_message(code: i32) -> Option<String> {
     match code {
         0..=7 => None, // success
-        8  => Some("Some files or directories could not be copied (copy errors occurred and the retry limit was exceeded). Check permissions or disk space.".to_string()),
-        16 => Some("Robocopy did not copy any files. Check the source and destination paths.".to_string()),
+        8 => Some(
+            "Some files or directories could not be copied — check: files in use (close Outlook/Excel/DB), access denied (try admin), disk full, path too long, or network disconnect. See per-file errors below.".to_string(),
+        ),
+        16 => Some("Robocopy did not copy any files — serious error. Check source/destination paths, permissions, and that the drive is online.".to_string()),
         _ => {
-            // Check for disk-full indicators in common codes
             if code & 8 != 0 {
-                Some(format!("Transfer failed (exit code {}). Possible causes: disk full, access denied, or path too long.", code))
+                if code & 16 != 0 {
+                    Some(format!("Transfer failed (exit code {}: copy errors + serious error) — possible disk full, access denied, or share offline. Check per-file errors.", code))
+                } else {
+                    Some(format!("Transfer failed (exit code {}: some files failed) — check for locked files (0x20), access denied (0x5), or disk full (0x70).", code))
+                }
             } else {
-                Some(format!("Transfer failed with exit code {}.", code))
+                Some(format!("Transfer failed with exit code {} (info bits 1/2/4 only, but treated as failure).", code))
             }
         }
     }
@@ -285,6 +425,7 @@ fn robocopy_exit_message(code: i32) -> Option<String> {
 
 enum RoboLine {
     FileHeader { is_same: bool, is_error: bool, size: u64, name: String },
+    Percent(f64),
     Speed(u64),
     Skip,
 }
@@ -316,6 +457,20 @@ fn parse_line(raw: &str) -> RoboLine {
         return RoboLine::Skip;
     }
 
+    // Percent progress for large files, e.g. " 12.3%  New File  5.0g  C:\big.dat" or "  100.0%"
+    // Must come before error/file parsing so "12.3%" isn't mistaken for a file.
+    if t.contains('%') {
+        for tok in t.split_whitespace() {
+            if tok.ends_with('%') {
+                if let Ok(p) = tok.trim_end_matches('%').replace(',', "").parse::<f64>() {
+                    if (0.0..=100.0).contains(&p) {
+                        return RoboLine::Percent(p);
+                    }
+                }
+            }
+        }
+    }
+
     // Error log lines, e.g. "2026/08/06 21:12:33 ERROR 32 (0x00000020) Copying
     // File C:\...". The "<decimal> (0x<hex>)" pair is rendered the same in
     // every locale, unlike the "ERROR" word itself.
@@ -329,7 +484,22 @@ fn parse_line(raw: &str) -> RoboLine {
                 && hex.len() > 4
                 && hex[3..hex.len() - 1].chars().all(|c| c.is_ascii_hexdigit());
             if is_hex_code {
-                let name = basename(&toks[i + 2..].join(" "));
+                let base = basename(&toks[i + 2..].join(" "));
+                let hint = match *tok {
+                    "32" => " — file in use (close the file) ",
+                    "33" => " — file in use (close the file) ",
+                    "5" => " — access denied ",
+                    "2" => " — file not found ",
+                    "3" => " — path not found ",
+                    "80" => " — file already exists ",
+                    "112" => " — disk full ",
+                    _ => " ",
+                };
+                let name = if hint.trim().is_empty() {
+                    base.clone()
+                } else {
+                    format!("{}{}(error {} {})", base, hint, tok, hex)
+                };
                 return RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name };
             }
         }
@@ -495,9 +665,92 @@ fn warp_file_op_sync(
         }
     };
 
+    log_event(&format!(
+        "start {} -> {} mode={} conflict={} folder={} throttle={} verify={}",
+        source, effective_dest, mode, conflict, folder_mode, throttle, verify
+    ));
+
+    // ── Overlapping path guard (prevent copying a folder into itself) ────────
+    {
+        fn norm(p: &str) -> String {
+            p.replace('\\', "/").trim_end_matches('/').to_lowercase()
+        }
+        let a = norm(&source);
+        let b = norm(&effective_dest);
+        if !a.is_empty() && !b.is_empty() {
+            if a == b {
+                log_event("blocked: same folder");
+                return Err("Source and destination are the same folder — choose a different destination.".to_string());
+            }
+            if b.starts_with(&format!("{}/", a)) {
+                log_event("blocked: dest inside source");
+                return Err("Destination is inside the source — copying would recurse into itself.".to_string());
+            }
+            if a.starts_with(&format!("{}/", b)) {
+                log_event("blocked: source inside dest");
+                return Err("Source is inside the destination — this may cause infinite recursion.".to_string());
+            }
+        }
+    }
+
+    // ── Network share reachability preflight ─────────────────────────────
+    if effective_dest.starts_with(r"\\") {
+        let parts: Vec<&str> = effective_dest.split('\\').filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 2 {
+            let share_root = format!(r"\\{}\{}", parts[0], parts[1]);
+            if std::fs::metadata(to_long_path(&share_root)).is_err() {
+                log_event(&format!("blocked: network unreachable {}", share_root));
+                return Err(format!(
+                    "Network path not reachable: {} — check connection, VPN, and credentials. The share may be offline.",
+                    share_root
+                ));
+            }
+        } else if std::fs::metadata(to_long_path(&effective_dest)).is_err() {
+            log_event(&format!("blocked: network unreachable {}", effective_dest));
+            return Err(format!(
+                "Network path not reachable: {} — check connection and credentials.",
+                effective_dest
+            ));
+        }
+    }
+
+    // ── FAT32 per-file limit preflight (4 GiB - 1) ─────────────────────────
+    if is_fat32_volume(&effective_dest) {
+        let max = max_file_size(&source);
+        if max > 4_294_967_295 {
+            log_event(&format!("blocked: FAT32 limit max={}", max));
+            return Err(format!(
+                "Destination is FAT32 — cannot store files larger than 4 GB (found {}). Reformat the drive to NTFS or exFAT or choose another destination.",
+                fmt_bytes_pretty(max)
+            ));
+        }
+    }
+
     // Scan for total size (determines whether progress bar is determinate)
-    let (total_bytes, total_files_scan) = scan(&source, &effective_dest);
+    let (mut total_bytes, total_files_scan) = scan(&source, &effective_dest);
     let indeterminate = total_bytes == 0; // empty folder or all zero-byte files
+
+    // ── Free space preflight ────────────────────────────────────────────────
+    if total_bytes > 0 {
+        if let Some(free) = free_bytes_available(&effective_dest)
+            .or_else(|| free_bytes_available(&destination))
+            .or_else(|| {
+                let d = extract_drive(&effective_dest);
+                if d.is_empty() { None } else { free_bytes_available(&format!(r"{}\", d.trim_end_matches(':'))) }
+            })
+        {
+            // Require 100 MB headroom plus total
+            let need = total_bytes.saturating_add(100 * 1024 * 1024);
+            if free < need {
+                log_event(&format!("blocked: no space need={} free={}", need, free));
+                return Err(format!(
+                    "Not enough free space on destination: need {} but only {} available. Free up space or choose another drive.",
+                    fmt_bytes_pretty(need),
+                    fmt_bytes_pretty(free)
+                ));
+            }
+        }
+    }
 
     let mut args = vec![source.clone(), effective_dest.clone()];
 
@@ -521,6 +774,9 @@ fn warp_file_op_sync(
         "/NJH".to_string(),
         "/NJS".to_string(),
         "/256".to_string(), // support paths longer than 260 chars (fix #3)
+        "/XJ".to_string(),  // exclude junctions (prevent loops, matches walk_dir symlink skip)
+        "/XJD".to_string(), // exclude junction dirs
+        "/COPY:DAT".to_string(), // explicit data+attributes+timestamps (default, but explicit for clarity)
     ]);
 
     // Bandwidth throttle via inter-packet gap (/IPG). Robocopy moves data in
@@ -530,19 +786,37 @@ fn warp_file_op_sync(
     //
     // USB auto-tuning: removable drives have limited IO queues. Reduce threads
     // (4 instead of 32) and enable restartable mode (/Z) for resilience against
-    // unexpected disconnects.
+    // unexpected disconnects. For large files (>1 GB) also use /Z for pause/resume
+    // even on non-USB (restartable at cost of a bit of throughput).
     let is_usb_source = is_path_on_usb(&source);
     let is_usb_dest = is_path_on_usb(&effective_dest);
     let is_usb = is_usb_source || is_usb_dest;
+    let is_large = total_bytes > 1_073_741_824; // 1 GiB
 
     if let Some(ipg) = ipg_for_throttle(throttle) {
-        args.push(format!("/IPG:{ipg}"));
-        // Throttling is single-threaded; no /MT needed.
+        // Throttle accuracy: for high caps (>=25 MB/s) use 4 threads with half IPG per thread
+        // to keep NVMe throughput while still capping. For low caps, single thread is more accurate.
+        if throttle >= 25 {
+            let per_thread_ipg = (ipg / 2).max(1);
+            args.push(format!("/IPG:{}", per_thread_ipg));
+            args.push("/MT:4".to_string());
+        } else {
+            args.push(format!("/IPG:{ipg}"));
+            // single-threaded for precise low caps
+        }
+        // Throttling + large file: also add /Z for resume (with single thread it's safe)
+        if is_large && throttle < 25 {
+            args.push("/Z".to_string());
+        }
     } else if is_usb {
         // USB: fewer threads to avoid overwhelming the controller, plus
         // restartable mode (/Z) so a copy interrupted by an unplugged drive
         // resumes from where it left off instead of restarting the whole file.
         args.push("/MT:4".to_string());
+        args.push("/Z".to_string());
+    } else if is_large {
+        // Large file on internal drive: enable restartable for pause/resume at cost of MT
+        args.push("/MT:8".to_string());
         args.push("/Z".to_string());
     } else {
         args.push("/MT:32".to_string());
@@ -555,10 +829,25 @@ fn warp_file_op_sync(
         .map_err(|e| format!("Failed to start robocopy: {e}"))?;
 
     let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
     {
         let state = app.state::<ActiveProcess>();
         *lock_process(&state) = Some(child);
+    }
+
+    // Stderr reader — robocopy occasionally writes errors to stderr; surface them
+    if let Some(stderr) = stderr {
+        let win2 = window.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().flatten() {
+                let t = line.trim().to_string();
+                if !t.is_empty() {
+                    let _ = win2.emit("warp-error", t.clone());
+                    log_event(&format!("robocopy stderr: {}", t));
+                }
+            }
+        });
     }
 
     let start = Instant::now();
@@ -575,13 +864,34 @@ fn warp_file_op_sync(
     let mut last_bps: u64 = 0;
     let mut files_done_count: u32 = 0;
 
-    // Live speed tracking
+    // Live speed tracking with EWMA smoothing for large files
     let mut speed_window_bytes: u64 = 0;
     let mut speed_window_start = Instant::now();
 
     // For indeterminate mode: emit a "pulse" every N files so UI shows activity
     let mut indeterminate_tick: u32 = 0;
     let mut last_emit_time = Instant::now();
+
+    // Pending large-file tracking: Some((size, before_bytes, name, last_percent))
+    // Large files (>=10 MB) are not counted immediately; we track via Percent lines for smooth progress.
+    let mut pending_large: Option<(u64, u64, String, f64)> = None;
+    const LARGE_THRESHOLD: u64 = 10 * 1024 * 1024;
+
+    // Helper to finalize pending large file (call on next file or at end)
+    let mut finalize_pending = |bytes_done: &mut u64,
+                                summary: &mut WarpSummary,
+                                total_bytes: &mut u64,
+                                pending: &mut Option<(u64, u64, String, f64)>| {
+        if let Some((sz, before, _name, _pct)) = pending.take() {
+            let new_done = before.saturating_add(sz);
+            // Drift fix: if scan underestimated (files changed), expand total
+            if new_done > *total_bytes && *total_bytes > 0 {
+                *total_bytes = new_done;
+            }
+            *bytes_done = new_done;
+            summary.bytes_transferred = *bytes_done;
+        }
+    };
 
     if let Some(stdout) = stdout {
         for line in BufReader::new(stdout).lines().flatten() {
@@ -596,6 +906,14 @@ fn warp_file_op_sync(
 
             match parse_line(&line) {
                 RoboLine::FileHeader { is_same, is_error, size, name } => {
+                    // Finalize previous large file if any
+                    finalize_pending(
+                        &mut bytes_done,
+                        &mut summary,
+                        &mut total_bytes,
+                        &mut pending_large,
+                    );
+
                     if is_error {
                         summary.failed += 1;
                         let _ = window.emit("warp-error", name.clone());
@@ -606,44 +924,148 @@ fn warp_file_op_sync(
                     }
                     summary.total_files += 1;
                     files_done_count += 1;
-                    bytes_done = bytes_done.saturating_add(size);
-                    summary.bytes_transferred = bytes_done;
 
-                    // Live speed
-                    speed_window_bytes += size;
-                    let window_ms = speed_window_start.elapsed().as_millis() as u64;
-                    if window_ms >= 400 {
-                        let bps = (speed_window_bytes as f64 / window_ms as f64 * 1000.0) as u64;
-                        if bps > 0 { last_speed_str = fmt_speed(bps); last_bps = bps; }
-                        speed_window_bytes = 0;
-                        speed_window_start = Instant::now();
-                    }
-
-                    let pct = if indeterminate {
-                        // Emit fake "pulse" increments for empty/tiny folders
-                        indeterminate_tick = (indeterminate_tick + 1) % 100;
-                        indeterminate_tick
+                    // For indeterminate or small files, count immediately.
+                    // For large transferred files, defer counting and track via Percent.
+                    let is_large_transfer =
+                        !is_same && !is_error && !indeterminate && size >= LARGE_THRESHOLD;
+                    if is_large_transfer {
+                        pending_large = Some((size, bytes_done, name.clone(), 0.0));
+                        // Emit at 0% for this file so UI shows file name immediately
+                        let pct = overall_pct(bytes_done, total_bytes);
+                        if pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150 {
+                            last_emitted = pct;
+                            last_emit_time = Instant::now();
+                            let _ = window.emit("warp-progress", WarpProgress {
+                                percentage: pct,
+                                current_file: name.clone(),
+                                speed: last_speed_str.clone(),
+                                files_done: files_done_count,
+                                files_total: total_files_scan,
+                                indeterminate,
+                                bytes_per_sec: last_bps,
+                                bytes_done,
+                                total_bytes,
+                            });
+                        }
                     } else {
-                        overall_pct(bytes_done, total_bytes)
-                    };
+                        bytes_done = bytes_done.saturating_add(size);
+                        if bytes_done > total_bytes && total_bytes > 0 {
+                            total_bytes = bytes_done;
+                        }
+                        summary.bytes_transferred = bytes_done;
 
-                    // Throttle IPC: emit on % change or at most every 100 ms to avoid flooding UI on many small files.
-                    let should_emit = pct != last_emitted
-                        || last_emit_time.elapsed().as_millis() >= 100;
-                    if should_emit {
-                        last_emitted = pct;
-                        last_emit_time = Instant::now();
-                        let _ = window.emit("warp-progress", WarpProgress {
-                            percentage: pct,
-                            current_file: name,
-                            speed: last_speed_str.clone(),
-                            files_done: files_done_count,
-                            files_total: total_files_scan,
-                            indeterminate,
-                            bytes_per_sec: last_bps,
-                            bytes_done,
-                            total_bytes,
-                        });
+                        // Live speed (EWMA)
+                        speed_window_bytes = speed_window_bytes.saturating_add(size);
+                        let window_ms = speed_window_start.elapsed().as_millis() as u64;
+                        if window_ms >= 400 {
+                            let instant_bps =
+                                (speed_window_bytes as f64 / window_ms as f64 * 1000.0) as u64;
+                            if instant_bps > 0 {
+                                last_bps = if last_bps == 0 {
+                                    instant_bps
+                                } else {
+                                    ((last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64)
+                                };
+                                last_speed_str = fmt_speed(last_bps);
+                            }
+                            speed_window_bytes = 0;
+                            speed_window_start = Instant::now();
+                        }
+
+                        let pct = if indeterminate {
+                            indeterminate_tick = (indeterminate_tick + 1) % 100;
+                            indeterminate_tick
+                        } else {
+                            overall_pct(bytes_done, total_bytes)
+                        };
+
+                        let should_emit = pct != last_emitted
+                            || last_emit_time.elapsed().as_millis() >= 150;
+                        if should_emit {
+                            last_emitted = pct;
+                            last_emit_time = Instant::now();
+                            let _ = window.emit("warp-progress", WarpProgress {
+                                percentage: pct,
+                                current_file: name,
+                                speed: last_speed_str.clone(),
+                                files_done: files_done_count,
+                                files_total: total_files_scan,
+                                indeterminate,
+                                bytes_per_sec: last_bps,
+                                bytes_done,
+                                total_bytes,
+                            });
+                        }
+                    }
+                }
+
+                RoboLine::Percent(p) => {
+                    if let Some(pending) = pending_large.as_mut() {
+                        let sz = pending.0;
+                        let before = pending.1;
+                        let name = pending.2.clone();
+                        let last_p = &mut pending.3;
+                        // Clamp and ensure monotonic
+                        let p_clamped = p.clamp(0.0, 100.0);
+                        if p_clamped < *last_p {
+                            // Robocopy may reset for next file without header; ignore regression
+                        } else {
+                            *last_p = p_clamped;
+                            let est = before.saturating_add(((sz as f64 * p_clamped / 100.0) as u64));
+                            // Speed incremental
+                            let delta = est.saturating_sub(bytes_done);
+                            if delta > 0 {
+                                speed_window_bytes = speed_window_bytes.saturating_add(delta);
+                                let window_ms =
+                                    speed_window_start.elapsed().as_millis() as u64;
+                                if window_ms >= 400 {
+                                    let instant_bps = (speed_window_bytes as f64
+                                        / window_ms as f64
+                                        * 1000.0) as u64;
+                                    if instant_bps > 0 {
+                                        last_bps = if last_bps == 0 {
+                                            instant_bps
+                                        } else {
+                                            ((last_bps as f64 * 0.7
+                                                + instant_bps as f64 * 0.3)
+                                                as u64)
+                                        };
+                                        last_speed_str = fmt_speed(last_bps);
+                                    }
+                                    speed_window_bytes = 0;
+                                    speed_window_start = Instant::now();
+                                }
+                            }
+                            bytes_done = est;
+                            if bytes_done > total_bytes && total_bytes > 0 {
+                                total_bytes = bytes_done;
+                            }
+                            summary.bytes_transferred = bytes_done;
+                            let pct = if indeterminate {
+                                indeterminate_tick
+                            } else {
+                                overall_pct(bytes_done, total_bytes)
+                            };
+                            // Throttle but ensure large file feels smooth (emit at least every 100ms)
+                            let should_emit = pct != last_emitted
+                                || last_emit_time.elapsed().as_millis() >= 150;
+                            if should_emit {
+                                last_emitted = pct;
+                                last_emit_time = Instant::now();
+                                let _ = window.emit("warp-progress", WarpProgress {
+                                    percentage: pct,
+                                    current_file: name.clone(),
+                                    speed: last_speed_str.clone(),
+                                    files_done: files_done_count,
+                                    files_total: total_files_scan,
+                                    indeterminate,
+                                    bytes_per_sec: last_bps,
+                                    bytes_done,
+                                    total_bytes,
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -656,6 +1078,13 @@ fn warp_file_op_sync(
                 RoboLine::Skip => {}
             }
         }
+        // Finalize any remaining large file at end of stream
+        finalize_pending(
+            &mut bytes_done,
+            &mut summary,
+            &mut total_bytes,
+            &mut pending_large,
+        );
     }
 
     // Get exit code — distinguish signal termination (code == None) from success.
@@ -681,15 +1110,26 @@ fn warp_file_op_sync(
     summary.duration_ms = start.elapsed().as_millis() as u64;
     summary.error_code = code;
 
-    if summary.cancelled { return Ok(summary); }
+    if summary.cancelled {
+        log_event(&format!(
+            "cancelled after {} ms, {}/{} files, {} bytes",
+            summary.duration_ms, summary.transferred, summary.total_files, summary.bytes_transferred
+        ));
+        return Ok(summary);
+    }
 
     if was_terminated_without_code {
         summary.error_message =
             "Transfer terminated unexpectedly (no exit code — process was killed)".to_string();
+        log_event("terminated without exit code");
         return Ok(summary);
     }
 
     if code < 8 {
+        log_event(&format!(
+            "success code={} transferred={} skipped={} failed={} bytes={} verified={}",
+            code, summary.transferred, summary.skipped, summary.failed, summary.bytes_transferred, summary.verified
+        ));
         // For move mode: robocopy /MOVE removes the files it moves but leaves
         // empty source directories behind. Clean up ONLY empty directories.
         //
@@ -710,6 +1150,7 @@ fn warp_file_op_sync(
             let _ = window.emit("warp-verifying", ());
             summary.verify_mismatches = verify_transfer(&source, &effective_dest);
             summary.verified = true;
+            log_event(&format!("verify mismatches={}", summary.verify_mismatches));
         }
 
         Ok(summary)
@@ -717,6 +1158,7 @@ fn warp_file_op_sync(
         // Surface a meaningful error message (#4 disk full / access denied)
         summary.error_message = robocopy_exit_message(code)
             .unwrap_or_else(|| format!("Transfer failed (exit code {})", code));
+        log_event(&format!("failed code={} msg={}", code, summary.error_message));
         Ok(summary) // Return as Ok with error info, not Err — so UI gets the summary
     }
 }
@@ -888,12 +1330,13 @@ mod tests {
     #[test]
     fn parse_timestamped_error_line() {
         // Real error log lines carry a timestamp and a locale-independent
-        // "<code> (0x<hex>)" pair.
+        // "<code> (0x<hex>)" pair. Sharing violation (32) now includes hint.
         let line = "2026/08/06 21:12:33 ERROR 32 (0x00000020) Copying File C:\\tmp\\src\\locked.txt";
         match parse_line(line) {
             RoboLine::FileHeader { is_error, name, .. } => {
                 assert!(is_error);
-                assert_eq!(name, "locked.txt");
+                assert!(name.contains("locked.txt"));
+                assert!(name.contains("file in use"));
             }
             _ => panic!("expected an error FileHeader"),
         }
@@ -917,6 +1360,57 @@ mod tests {
 
         // Cleanup.
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn to_long_path_handles_normal_and_long() {
+        assert_eq!(to_long_path(r"C:\short"), r"C:\short");
+        assert_eq!(
+            to_long_path(r"\\server\share\file"),
+            r"\\?\UNC\server\share\file"
+        );
+        let long = format!("C:\\{}", "a".repeat(300));
+        assert!(to_long_path(&long).starts_with(r"\\?\"));
+        assert!(to_long_path(r"\\?\C:\already").starts_with(r"\\?\"));
+    }
+
+    #[test]
+    fn max_file_size_sparse() {
+        let base = std::env::temp_dir().join(format!("warp_max_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let p = base.join("sparse.dat");
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_len(100 * 1024 * 1024).unwrap();
+        drop(f);
+        assert_eq!(
+            max_file_size(&base.to_string_lossy()),
+            100 * 1024 * 1024
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn parse_percent_line() {
+        match parse_line("  12.3%") {
+            RoboLine::Percent(p) => assert!((p - 12.3).abs() < 0.01),
+            _ => panic!("expected Percent"),
+        }
+        match parse_line("  100%") {
+            RoboLine::Percent(p) => assert_eq!(p, 100.0),
+            _ => panic!("expected Percent 100"),
+        }
+        match parse_line("  0%  New File  1.0g  C:\\big.dat") {
+            RoboLine::Percent(p) => assert_eq!(p, 0.0),
+            _ => panic!("expected Percent with file"),
+        }
+    }
+
+    #[test]
+    fn fmt_bytes_pretty_scales() {
+        assert_eq!(fmt_bytes_pretty(512), "512 B");
+        assert_eq!(fmt_bytes_pretty(2048), "2 KB");
+        assert_eq!(fmt_bytes_pretty(5 * 1_048_576), "5.0 MB");
+        assert_eq!(fmt_bytes_pretty(3 * 1_073_741_824), "3.0 GB");
     }
 }
 

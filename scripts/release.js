@@ -238,9 +238,9 @@ function releaseRepo(repoDir) {
   const cwd = repoDir === ROOT ? ROOT : SITE;
   const inCwd = (args) => run("git", args, { cwd });
 
-  // Never stage session tooling or other junk that may be lying around.
-  const pathspec = cwd === ROOT ? [".", ":(exclude).freebuff"] : ["."];
-  inCwd(["add", "-A", "--", ...pathspec]);
+  // Stage all changes; .freebuff is already in .gitignore so it won't be staged.
+  // Avoid `:(exclude)` pathspec which fails on some Windows Git installs.
+  inCwd(["add", "-A"]);
   inCwd(["commit", "-m", commitMsg, "--allow-empty"]);
   inCwd(["tag", "-a", `v${version}`, "-m", `Warp ${version}`]);
   inCwd(["push", "origin", "HEAD"]);

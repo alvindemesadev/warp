@@ -20,11 +20,23 @@
   } = $props();
 
   const win = getCurrentWindow();
+
+  function handleClose() {
+    if (isProcessing) {
+      // Guard: orphan robocopy would keep running if window closed mid-transfer
+      const ok = window.confirm("Transfer in progress — close Warp and cancel the transfer?");
+      if (!ok) return;
+      // Best-effort cancel before close; child will be killed via mutex
+      try { win.close(); } catch {}
+      return;
+    }
+    win.close();
+  }
 </script>
 
 <div class="traffic-bar" data-tauri-drag-region>
   <button
-    onclick={() => win.close()} aria-label="Close" class="traffic traffic--red"
+    onclick={handleClose} aria-label="Close" class="traffic traffic--red"
     onmouseenter={(e) => ((e.currentTarget.querySelector('span') as HTMLElement).style.opacity='1')}
     onmouseleave={(e) => ((e.currentTarget.querySelector('span') as HTMLElement).style.opacity='0')}
   ><span class="traffic-x">✕</span></button>

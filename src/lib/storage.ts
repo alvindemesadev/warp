@@ -107,6 +107,53 @@ export function saveRecentEntries(entries: RecentEntry[]): void {
   try { localStorage.setItem("warp-recent", JSON.stringify(entries)); } catch {}
 }
 
+export type QueueJob = {
+  id: number;
+  source: string;
+  dest: string;
+  mode: Mode;
+  conflict: Conflict;
+  folderMode: "into" | "merge";
+  throttle: number;
+  verify: boolean;
+};
+
+export function isValidQueueJob(v: unknown): v is QueueJob {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.id === "number" && Number.isFinite(o.id) &&
+    typeof o.source === "string" && typeof o.dest === "string" &&
+    isValidMode(o.mode) &&
+    isValidConflict(o.conflict) &&
+    VALID_FOLDER.has(o.folderMode as string) &&
+    typeof o.throttle === "number" && Number.isFinite(o.throttle) &&
+    typeof o.verify === "boolean"
+  );
+}
+
+export function loadQueue(): QueueJob[] {
+  try {
+    const raw = localStorage.getItem("warp-queue");
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("not array");
+    const valid = parsed.filter(isValidQueueJob);
+    if (valid.length !== parsed.length && valid.length === 0) localStorage.removeItem("warp-queue");
+    return valid;
+  } catch {
+    try { localStorage.removeItem("warp-queue"); } catch {}
+    return [];
+  }
+}
+
+export function saveQueue(queue: QueueJob[]): void {
+  try {
+    if (queue.length === 0) localStorage.removeItem("warp-queue");
+    else localStorage.setItem("warp-queue", JSON.stringify(queue));
+  } catch {}
+}
+
 export function normalizeThrottle(v: unknown): number {
   const n = typeof v === "number" ? v : parseInt(String(v), 10);
   if (!Number.isFinite(n) || n <= 0) return 0;

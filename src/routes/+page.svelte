@@ -8,7 +8,7 @@
   import { sendNotification, isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
   import { check, type Update } from "@tauri-apps/plugin-updater";
   import { basename, fmtBytes, fmtDuration, fmtEta, fmtFiles, timeAgo } from "$lib/format";
-  import { loadPresets, loadRecent as loadRecentEntries, savePresets as persistPresets, saveRecentEntries as persistRecent } from "$lib/storage";
+  import { loadPresets, loadRecent as loadRecentEntries, savePresets as persistPresets, saveRecentEntries as persistRecent, loadQueue, saveQueue } from "$lib/storage";
   import { normalizeThrottleInput } from "$lib/transfer";
   import type { Mode, Conflict, FolderMode, PathInfo, WarpProgress, WarpSummary, QueueJob, Preset, RecentEntry } from "$lib/types";
 
@@ -88,6 +88,8 @@
     getVersion().then((v) => (APP_VERSION = v)).catch(() => {});
     recentTransfers = loadRecentEntries();
     presets = loadPresets();
+    queue = loadQueue();
+    _jobId = queue.reduce((m, j) => Math.max(m, j.id), 0);
     const unlisten: Array<() => void> = [];
     (async () => {
       unlisten.push(await listen<WarpProgress>("warp-progress", ({ payload }) => {
@@ -236,10 +238,11 @@
   function addToQueue() {
     if (!canStart) return;
     queue = [...queue, { id: ++_jobId, ...currentJobConfig() }];
+    saveQueue(queue);
     sourcePath = destPath = ""; sourceInfo = destInfo = null;
   }
-  function removeFromQueue(id: number) { queue = queue.filter((j) => j.id !== id); }
-  function clearQueue() { queue = []; }
+  function removeFromQueue(id: number) { queue = queue.filter((j) => j.id !== id); saveQueue(queue); }
+  function clearQueue() { queue = []; saveQueue(queue); }
   async function runQueue() {
     if (isProcessing || isQueueRunning) return;
     const jobs: QueueJob[] = [...queue];
@@ -260,7 +263,7 @@
       }
       isProcessing = false; isVerifying = false;
     }
-    queue = []; queueIndex = 0; isQueueRunning = false; isIndeterminate = false; isVerifying = false; progress = 100; showQueueSummary = true; notifyQueueDone();
+    queue = []; saveQueue(queue); queueIndex = 0; isQueueRunning = false; isIndeterminate = false; isVerifying = false; progress = 100; showQueueSummary = true; notifyQueueDone();
   }
   let showPresetModal = $state(false);
   let presetName = $state("");
@@ -324,16 +327,37 @@
       updateState = "installing";
     } catch { updateState = "installing"; }
   }
-  let APP_VERSION = $state("1.1.3");
+  let APP_VERSION = $state("1.1.4");
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
     { id: "move", label: "Move", desc: "Transfer and remove from source" },
     { id: "sync", label: "Sync", desc: "Mirror source → destination", warning: "Files only in destination will be DELETED" },
   ];
+  function normalizePath(p: string): string {
+    return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  }
+  const overlappingPath = $derived.by(() => {
+    if (!sourcePath || !destPath) return null;
+    const a = normalizePath(sourcePath);
+    const b = normalizePath(destPath);
+    // Also consider effective dest when folderMode is "into" (dest will contain source name)
+    const sourceName = basename(sourcePath).toLowerCase();
+    const effectiveB = folderMode === "into" && sourceName && !b.endsWith("/" + sourceName) ? `${b}/${sourceName}` : b;
+    if (a === b || a === effectiveB) return "Source and destination are the same folder";
+    if (effectiveB.startsWith(a + "/")) return "Destination is inside the source — would copy into itself";
+    if (a.startsWith(b + "/")) return "Source is inside the destination — may cause recursion";
+    return null;
+  });
   const crossDriveMove = $derived(mode === "move" && !!sourceInfo?.drive && !!destInfo?.drive && sourceInfo.drive.toLowerCase() !== destInfo.drive.toLowerCase());
   const mergeSyncDanger = $derived(mode === "sync" && folderMode === "merge");
-  const canStart = $derived(!!sourcePath && !!destPath && !isProcessing && !sourceInfo?.isFile && !destInfo?.isFile);
-  const startLabel = $derived(!sourcePath || !destPath ? "Drop source and destination to begin" : sourceInfo?.isFile ? "Source must be a folder, not a file" : destInfo?.isFile ? "Destination must be a folder, not a file" : `${MODES.find(m => m.id === mode)?.label} Files`);
+  const canStart = $derived(!!sourcePath && !!destPath && !isProcessing && !sourceInfo?.isFile && !destInfo?.isFile && !overlappingPath);
+  const startLabel = $derived(
+    overlappingPath ? overlappingPath
+    : !sourcePath || !destPath ? "Drop source and destination to begin"
+    : sourceInfo?.isFile ? "Source must be a folder, not a file"
+    : destInfo?.isFile ? "Destination must be a folder, not a file"
+    : `${MODES.find(m => m.id === mode)?.label} Files`
+  );
 </script>
 
 <TrafficLights
@@ -404,6 +428,11 @@
         <QueueList queue={queue} onRemove={removeFromQueue} onClear={clearQueue} />
       {/if}
 
+      {#if overlappingPath}
+        <div class="warn warn--red">
+          <p class="warn-text">⚠ <strong>Invalid paths:</strong> {overlappingPath}. Choose a different destination.</p>
+        </div>
+      {/if}
       {#if crossDriveMove}
         <div class="warn warn--orange">
           <p class="warn-text">⚠ <strong>Cross-drive move:</strong> Robocopy will copy files to {sourceInfo?.drive ?? "dest"} then delete from {destInfo?.drive ?? "source"}. If cancelled mid-transfer, source files may be partially deleted. Consider using <strong>Copy</strong> instead.</p>

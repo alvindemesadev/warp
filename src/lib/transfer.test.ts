@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isSpecialPath, normalizeThrottleInput, isPresetThrottle, THROTTLE_OPTIONS } from "./transfer";
+import { isSpecialPath, normalizeThrottleInput, isPresetThrottle, THROTTLE_OPTIONS, normalizeWorkersInput } from "./transfer";
 
 describe("isSpecialPath", () => {
   it("detects OneDrive and network", () => {
@@ -28,5 +28,19 @@ describe("isPresetThrottle", () => {
     for (const o of THROTTLE_OPTIONS) expect(isPresetThrottle(o.value)).toBe(true);
     expect(isPresetThrottle(50)).toBe(false);
     expect(isPresetThrottle(7)).toBe(false);
+  });
+});
+
+describe("normalizeWorkersInput", () => {
+  it("keeps 0 as Auto", () => {
+    expect(normalizeWorkersInput(0)).toBe(0);
+    expect(normalizeWorkersInput(-5)).toBe(0);
+    expect(normalizeWorkersInput(NaN)).toBe(0);
+  });
+  it("clamps explicit counts to 2..8 and rounds", () => {
+    expect(normalizeWorkersInput(2)).toBe(2);
+    expect(normalizeWorkersInput(4.6)).toBe(5);
+    expect(normalizeWorkersInput(1)).toBe(2);
+    expect(normalizeWorkersInput(99)).toBe(8);
   });
 });

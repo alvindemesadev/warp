@@ -1,5 +1,6 @@
-// Centralized shared types — single source for Mode/Conflict/PathInfo etc.
-// Re-exports validation-aware types from storage/transfer and adds Tauri-specific.
+// Centralized shared types — single source of truth for Mode/Conflict/PathInfo
+// and every payload crossing the Tauri IPC boundary. storage.ts and
+// transfer.ts import from here (and re-export for backwards compatibility).
 
 export type Mode = "copy" | "move" | "sync";
 export type Conflict = "overwrite" | "skip";
@@ -23,6 +24,10 @@ export type WarpProgress = {
   bytesPerSec: number;
   bytesDone: number;
   totalBytes: number;
+  /** Parallel engine only (1 = sequential). */
+  activeWorkers?: number;
+  shardsDone?: number;
+  shardsTotal?: number;
 };
 
 export type WarpSummary = {
@@ -37,6 +42,10 @@ export type WarpSummary = {
   errorMessage: string;
   verified: boolean;
   verifyMismatches: number;
+  /** Parallel engine only (1 = sequential). */
+  workersUsed?: number;
+  /** Files recovered by the automatic retry pass. */
+  retriedOk?: number;
 };
 
 export type QueueJob = {
@@ -48,6 +57,8 @@ export type QueueJob = {
   folderMode: FolderMode;
   throttle: number;
   verify: boolean;
+  /** Parallel workers: 0 = Auto, 2..=8 explicit. */
+  workers?: number;
 };
 
 export type Preset = {
@@ -59,6 +70,8 @@ export type Preset = {
   folderMode: FolderMode;
   throttle: number;
   verify: boolean;
+  /** Parallel workers: 0 = Auto, 2..=8 explicit. */
+  workers?: number;
 };
 
 export type RecentEntry = {

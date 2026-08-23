@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Conflict, FolderMode } from "$lib/types";
-  import { THROTTLE_OPTIONS, normalizeThrottleInput } from "$lib/transfer";
+  import { THROTTLE_OPTIONS, WORKER_OPTIONS, normalizeThrottleInput } from "$lib/transfer";
   let {
     folderMode = $bindable("into"),
     conflict = $bindable("overwrite"),
@@ -10,11 +10,13 @@
     destPath = "",
     sourcePath = "",
     customSpeed = $bindable(false),
-    customSpeedValue = $bindable(50)
+    customSpeedValue = $bindable(50),
+    workers = $bindable(0)
   }: {
     folderMode: FolderMode; conflict: Conflict; throttle: number; verify: boolean;
     mode: string; destPath: string; sourcePath: string;
     customSpeed: boolean; customSpeedValue: number;
+    workers: number;
   } = $props();
 
   import { basename } from "$lib/format";
@@ -75,6 +77,19 @@
           onclick={() => verify = true}>On</button>
       </div>
     </div>
+    <div class="opt-group">
+      <span class="opt-label">Workers</span>
+      <div class="seg" role="group" aria-label="Parallel workers" class:seg--disabled={mode === "sync"}>
+        {#each WORKER_OPTIONS as opt}
+          <button class="seg-btn" class:on={workers === opt.value} disabled={mode === "sync"}
+            title={mode === "sync" ? "Sync runs as a single job for safety" : opt.title}
+            onclick={() => workers = opt.value}>{opt.label}</button>
+        {/each}
+      </div>
+      {#if mode !== "sync"}
+        <p class="opt-hint">Parallel copies folders concurrently. Sync &amp; throttled jobs always run single.</p>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -92,4 +107,7 @@
   .seg-input { width: 56px; padding: 4px 6px; margin-left: 2px; border-radius: 6px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3); color: var(--text-primary); font-size: 11px; font-family: var(--font-sf); outline: none; }
   .seg-input:focus { border-color: var(--accent); }
   .seg-unit { font-size: 10px; color: var(--text-tertiary); padding: 0 4px; }
+  .seg--disabled { opacity: 0.45; }
+  .seg-btn:disabled { cursor: not-allowed; color: var(--text-tertiary); background: transparent; box-shadow: none; }
+  .opt-hint { font-size: 9px; color: var(--text-tertiary); max-width: 220px; line-height: 1.5; }
 </style>

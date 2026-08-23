@@ -18,7 +18,11 @@
       </div>
       <div class="head-text">
         <p class="title">{summary.cancelled ? "Transfer cancelled" : summary.errorMessage ? "Transfer failed" : summary.failed > 0 ? "Completed with errors" : "Transfer complete"}</p>
-        <p class="sub">{fmtDuration(summary.durationMs)} · {mode}{#if summary.bytesTransferred > 0} · {fmtBytes(summary.bytesTransferred)}{/if}</p>
+        <p class="sub">
+          {fmtDuration(summary.durationMs)} · {mode}{#if summary.bytesTransferred > 0} · {fmtBytes(summary.bytesTransferred)}{/if}
+          {#if (summary.workersUsed ?? 1) > 1} · <span class="sub-accent">⚡ {summary.workersUsed} workers</span>{/if}
+          {#if (summary.retriedOk ?? 0) > 0} · <span class="sub-green">↻ {summary.retriedOk} recovered</span>{/if}
+        </p>
         {#if summary.verified}
           <p class="verify" class:verify--ok={summary.verifyMismatches===0} class:verify--warn={summary.verifyMismatches!==0}>
             {summary.verifyMismatches === 0 ? "✓ Verified — all files match" : `⚠ Verified — ${summary.verifyMismatches} file${summary.verifyMismatches === 1 ? '' : 's'} differ`}
@@ -28,12 +32,18 @@
     </div>
     <div class="stats">
       {#each [
-        { label: mode==="move"?"Moved":mode==="sync"?"Synced":"Copied", value: summary.transferred, color: "var(--accent)" },
-        { label:"Skipped", value: summary.skipped, color: "var(--text-secondary)" },
-        { label:"Failed",  value: summary.failed,  color: summary.failed>0?"var(--red)":"var(--text-tertiary)" },
+        { label: mode==="move"?"Moved":mode==="sync"?"Synced":"Copied", value: summary.transferred },
+        { label:"Skipped", value: summary.skipped },
+        { label:"Failed",  value: summary.failed },
       ] as stat, i}
         <div class="stat" class:stat--border={i<2}>
-          <p class="stat-value" style:color={stat.color}>{stat.value.toLocaleString()}</p>
+          <p
+            class="stat-value"
+            class:stat-value--accent={i === 0}
+            class:stat-value--secondary={i === 1}
+            class:stat-value--red={i === 2 && summary.failed > 0}
+            class:stat-value--tertiary={i === 2 && summary.failed === 0}
+          >{stat.value.toLocaleString()}</p>
           <p class="stat-label">{stat.label}</p>
         </div>
       {/each}
@@ -82,6 +92,8 @@
   .head-text { flex: 1; min-width: 0; }
   .title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 0; letter-spacing: -0.01em; }
   .sub { font-size: 11px; color: var(--text-tertiary); margin: 3px 0 0; }
+  .sub-accent { color: var(--accent); }
+  .sub-green { color: var(--green); }
   .verify { font-size: 10px; font-weight: 600; margin: 4px 0 0; }
   .verify--ok { color: var(--green); }
   .verify--warn { color: var(--orange); }
@@ -89,6 +101,10 @@
   .stat { padding: 13px 10px; text-align: center; }
   .stat--border { border-right: 1px solid var(--glass-border); }
   .stat-value { font-size: 22px; font-weight: 700; margin: 0; line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .stat-value--accent { color: var(--accent); }
+  .stat-value--secondary { color: var(--text-secondary); }
+  .stat-value--red { color: var(--red); }
+  .stat-value--tertiary { color: var(--text-tertiary); }
   .stat-label { font-size: 9px; font-weight: 600; color: var(--text-tertiary); margin: 4px 0 0; letter-spacing: 0.04em; text-transform: uppercase; }
   .info-box { background: rgba(10,132,255,0.08); border: 1px solid rgba(10,132,255,0.2); border-radius: 12px; padding: 10px 14px; }
   .info-text { font-size: 11px; color: var(--accent); margin: 0; line-height: 1.5; }

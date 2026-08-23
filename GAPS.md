@@ -58,6 +58,20 @@
 
 ---
 
+## Parallel engine (shipped with the 1.1.4 working tree, post-GAPS)
+
+- [x] **Shard partitioner** `src-tauri/src/shards.rs` — disjoint top-level dir shards + `/LEV:1` root-files shard + recursive split of dominant children (>40% bytes, >512 MB). Coverage/disjointness property-tested.
+- [x] **Worker pool + coordinator** `src-tauri/src/lib.rs` (`transfer_parallel`) — work-stealing queue, bounded workers, per-shard robocopy children registered in shared control.
+- [x] **Shared progress tracker** `src-tauri/src/pool.rs` (`Tracker`) — merged byte/%/speed aggregation, EWMA preserved, drift expansion preserved; parallel mode disables large-file `%` deferral.
+- [x] **Configurable workers** — UI segmented Auto/2/4/6/8 (`OptionsPanel`), persisted in presets/queue jobs, `workers` param on `warp_file_op` (None/0=Auto).
+- [x] **Contention policy** — hard gates: sync & throttle → sequential; auto caps: USB 2 / network 3 / local clamp 2..=6; per-worker `/MT:8` (4 on USB).
+- [x] **Pause/Resume** — dispatch gate via `pause_warp`; active shards finish, queue holds. UI chip + PAUSE/RESUME button in `ProgressCard`.
+- [x] **Cancel** — pool-wide kill through `TransferControl::kill_all`; window-close/app-exit handlers cover all children.
+- [x] **Auto-retry** — failed shards re-run sequentially up to 2×; recovered count shown in results (`retriedOk`).
+- [x] **Tests** — partitioner property tests, tracker state-machine tests, worker-policy table, retry math, real-robocopy concurrent two-shard integration (`cargo test --lib` 39), storage validators + normalizeWorkersInput (`npm test` 25).
+
+---
+
 ## Implementation Order (next)
 
 1. **P0 safety** (overlapping paths, FAT32, `\\?\`, partial cleanup) — ship as `1.1.4`

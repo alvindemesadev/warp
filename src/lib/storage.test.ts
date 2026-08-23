@@ -27,6 +27,15 @@ describe("isValidPreset", () => {
     expect(isValidPreset({ name: "x", source: "a", dest: "b", mode: "copy", conflict: "skip", folderMode: "merge", throttle: NaN, verify: false })).toBe(false);
     expect(isValidPreset({ name: "x", source: "a", dest: "b", mode: "copy", conflict: "skip", folderMode: "merge", throttle: 5, verify: "yes" as any })).toBe(false);
   });
+  it("accepts optional workers (0=Auto or 2..8) and rejects out-of-range", () => {
+    const base = { name: "x", source: "a", dest: "b", mode: "copy", conflict: "skip", folderMode: "merge", throttle: 0, verify: false };
+    expect(isValidPreset({ ...base })).toBe(true);
+    expect(isValidPreset({ ...base, workers: 0 })).toBe(true);
+    expect(isValidPreset({ ...base, workers: 6 })).toBe(true);
+    expect(isValidPreset({ ...base, workers: 9 })).toBe(false);
+    expect(isValidPreset({ ...base, workers: -1 })).toBe(false);
+    expect(isValidPreset({ ...base, workers: NaN })).toBe(false);
+  });
   it("rejects missing fields", () => {
     expect(isValidPreset({ name: "x" } as any)).toBe(false);
     expect(isValidPreset(null)).toBe(false);

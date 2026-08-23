@@ -1,9 +1,10 @@
 <script lang="ts">
+  // `phase` (not `state`) — a prop named `state` collides with the $state rune.
   let {
     version = "",
     currentVersion = "",
     body = "",
-    state = "idle",
+    phase = "idle",
     progress = 0,
     onDismiss,
     onInstall
@@ -11,15 +12,21 @@
     version: string;
     currentVersion: string;
     body: string;
-    state: string;
+    phase: string;
     progress: number;
     onDismiss: () => void;
     onInstall: () => void;
   } = $props();
+
+  // Bar width via a CSS custom property (CSSOM) — keeps the strict CSP intact.
+  let fillEl = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    if (progress > 0) fillEl?.style.setProperty("--p", `${progress}%`);
+  });
 </script>
 
 <div class="overlay" role="dialog" aria-modal="true" aria-label="Update available" tabindex="-1">
-  <button type="button" aria-label="Dismiss" onclick={() => { if (state !== "downloading" && state !== "installing") onDismiss(); }} class="overlay-backdrop"></button>
+  <button type="button" aria-label="Dismiss" onclick={() => { if (phase !== "downloading" && phase !== "installing") onDismiss(); }} class="overlay-backdrop"></button>
   <div class="modal">
     <div class="head">
       <div class="icon">
@@ -29,28 +36,28 @@
         </svg>
       </div>
       <div>
-        <p class="title">{state === "downloading" ? "Downloading update…" : state === "installing" ? "Installing update…" : "Update available"}</p>
+        <p class="title">{phase === "downloading" ? "Downloading update…" : phase === "installing" ? "Installing update…" : "Update available"}</p>
         <p class="sub">Warp v{currentVersion} → <strong class="accent">v{version}</strong></p>
       </div>
     </div>
 
-    {#if body && state !== "downloading" && state !== "installing"}
+    {#if body && phase !== "downloading" && phase !== "installing"}
       <div class="notes"><p class="notes-text">{body}</p></div>
     {/if}
 
-    {#if state === "downloading"}
+    {#if phase === "downloading"}
       <div class="dl">
-        <div class="bar"><div class="fill" style:width="{progress > 0 ? progress : 100}%" style:animation={progress === 0 ? 'update-indeterminate 1.2s ease-in-out infinite' : ''}></div></div>
+        <div class="bar"><div class="fill" class:fill--indet={progress === 0} bind:this={fillEl}></div></div>
         <p class="dl-label">{progress > 0 ? `${progress}%` : "Downloading installer…"}</p>
       </div>
-    {:else if state === "installing"}
+    {:else if phase === "installing"}
       <div class="installed">
         <div class="spinner"></div>
         <p class="installed-text">Installed — Warp will restart to finish the update.</p>
       </div>
     {/if}
 
-    {#if state !== "downloading" && state !== "installing"}
+    {#if phase !== "downloading" && phase !== "installing"}
       <p class="hint">Download the latest version and install it inside Warp. Your transfers and settings are kept.</p>
       <div class="actions">
         <button onclick={onDismiss} class="btn btn--ghost">Later</button>
@@ -73,7 +80,9 @@
   .notes-text { font-size: 11px; color: var(--text-secondary); line-height: 1.55; margin: 0; white-space: pre-wrap; word-break: break-word; }
   .dl { margin-bottom: 14px; }
   .bar { height: 4px; background: rgba(255,255,255,0.08); border-radius: 100px; overflow: hidden; }
-  .fill { height: 100%; background: linear-gradient(90deg,var(--accent),#5e5ce6); border-radius: 100px; transition: width 0.3s; }
+  .fill { height: 100%; width: var(--p, 100%); background: linear-gradient(90deg,var(--accent),#5e5ce6); border-radius: 100px; transition: width 0.3s; }
+  .fill--indet { width: 100%; animation: dl-indeterminate 1.2s ease-in-out infinite; }
+  @keyframes dl-indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
   .dl-label { font-size: 10px; color: var(--text-tertiary); margin: 7px 0 0; text-align: center; }
   .installed { display: flex; align-items: center; gap: 9px; background: rgba(48,209,88,0.08); border: 1px solid rgba(48,209,88,0.2); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
   .spinner { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; border: 2px solid rgba(48,209,88,0.25); border-top-color: var(--green); animation: spin-smooth 1.2s linear infinite; }

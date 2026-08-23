@@ -1,33 +1,19 @@
 // Storage helpers with validation — never trust localStorage.
 // Corrupt JSON or old schema should not crash the app; we clear the bad key and return fallback.
+// Types live in ./types (single source of truth); re-exported for compat.
+import type { Mode, Conflict, Preset, RecentEntry, QueueJob } from "./types";
 
-export type Mode = "copy" | "move" | "sync";
-export type Conflict = "overwrite" | "skip";
-
-export type Preset = {
-  name: string;
-  source: string;
-  dest: string;
-  mode: Mode;
-  conflict: Conflict;
-  folderMode: "into" | "merge";
-  throttle: number;
-  verify: boolean;
-};
-
-export type RecentEntry = {
-  source: string;
-  dest: string;
-  mode: Mode;
-  transferred: number;
-  bytes: number;
-  duration_ms: number;
-  timestamp: number;
-};
+export type { Mode, Conflict, Preset, RecentEntry, QueueJob };
 
 const VALID_MODES = new Set(["copy", "move", "sync"]);
 const VALID_CONFLICTS = new Set(["overwrite", "skip"]);
 const VALID_FOLDER = new Set(["into", "merge"]);
+
+/** Optional parallel-worker field: absent/0 = Auto, else 2..=8. */
+function hasValidWorkers(v: unknown): boolean {
+  if (v === undefined) return true;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 8;
+}
 
 function isValidMode(v: unknown): v is Mode {
   return typeof v === "string" && VALID_MODES.has(v);
@@ -46,7 +32,8 @@ export function isValidPreset(v: unknown): v is Preset {
     isValidConflict(o.conflict) &&
     VALID_FOLDER.has(o.folderMode as string) &&
     typeof o.throttle === "number" && Number.isFinite(o.throttle) && o.throttle >= 0 &&
-    typeof o.verify === "boolean"
+    typeof o.verify === "boolean" &&
+    hasValidWorkers(o.workers)
   );
 }
 
@@ -107,17 +94,6 @@ export function saveRecentEntries(entries: RecentEntry[]): void {
   try { localStorage.setItem("warp-recent", JSON.stringify(entries)); } catch {}
 }
 
-export type QueueJob = {
-  id: number;
-  source: string;
-  dest: string;
-  mode: Mode;
-  conflict: Conflict;
-  folderMode: "into" | "merge";
-  throttle: number;
-  verify: boolean;
-};
-
 export function isValidQueueJob(v: unknown): v is QueueJob {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
@@ -128,7 +104,8 @@ export function isValidQueueJob(v: unknown): v is QueueJob {
     isValidConflict(o.conflict) &&
     VALID_FOLDER.has(o.folderMode as string) &&
     typeof o.throttle === "number" && Number.isFinite(o.throttle) &&
-    typeof o.verify === "boolean"
+    typeof o.verify === "boolean" &&
+    hasValidWorkers(o.workers)
   );
 }
 

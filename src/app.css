@@ -40,6 +40,12 @@ button {
   cursor: pointer;
 }
 
+/* SvelteKit's body wrapper div must not affect layout. Kept as a class (not an
+   inline style attribute) so the strict CSP can stay free of 'unsafe-inline'. */
+.body-wrapper {
+  display: contents;
+}
+
 img, svg, video, canvas, audio, iframe, embed, object {
   display: block;
   vertical-align: middle;

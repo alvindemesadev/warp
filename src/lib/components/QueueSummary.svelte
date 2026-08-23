@@ -3,13 +3,12 @@
   import type { WarpSummary } from "$lib/types";
   let { results, cancelled, onDone }: { results: WarpSummary[]; cancelled: boolean; onDone: () => void } = $props();
   const anyFailed = $derived(results.some((r) => r.failed > 0 || !!r.errorMessage));
-  const headerColor = $derived(cancelled ? "255,159,10" : anyFailed ? "255,69,58" : "48,209,88");
 </script>
 
 <div class="wrap animate-fade-up">
   <div class="card">
     <div class="head">
-      <div class="icon" style:background={`rgba(${headerColor},0.14)`}>
+      <div class="icon" class:icon--cancel={cancelled} class:icon--error={anyFailed} class:icon--ok={!cancelled && !anyFailed}>
         {#if cancelled}
           <svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="#ff9f0a" stroke-width="1.8" stroke-linecap="round"/></svg>
         {:else if anyFailed}
@@ -26,7 +25,7 @@
     <div class="list">
       {#each results as r, i}
         <div class="row" class:row--border={i < results.length - 1}>
-          <div class="row-icon" style:background={r.cancelled?'rgba(255,159,10,0.14)':r.failed>0?'rgba(255,69,58,0.14)':'rgba(48,209,88,0.14)'}>
+          <div class="row-icon" class:row-icon--warn={r.cancelled} class:row-icon--err={r.failed>0} class:row-icon--ok={!r.cancelled && r.failed===0}>
             {#if r.cancelled}
               <svg width="11" height="11" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="#ff9f0a" stroke-width="2" stroke-linecap="round"/></svg>
             {:else if r.failed > 0}
@@ -54,6 +53,9 @@
   .card { background: var(--glass-bg); border: 1px solid var(--glass-border); backdrop-filter: blur(48px) saturate(180%); border-radius: 16px; overflow: hidden; }
   .head { padding: 15px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--glass-border); }
   .icon { width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .icon--ok { background: rgba(48,209,88,0.14); }
+  .icon--error { background: rgba(255,69,58,0.14); }
+  .icon--cancel { background: rgba(255,159,10,0.14); }
   .head-text { flex: 1; min-width: 0; }
   .title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 0; letter-spacing: -0.01em; }
   .sub { font-size: 11px; color: var(--text-tertiary); margin: 3px 0 0; }
@@ -61,6 +63,9 @@
   .row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
   .row--border { border-bottom: 1px solid var(--glass-border); }
   .row-icon { width: 20px; height: 20px; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .row-icon--ok { background: rgba(48,209,88,0.14); }
+  .row-icon--err { background: rgba(255,69,58,0.14); }
+  .row-icon--warn { background: rgba(255,159,10,0.14); }
   .row-text { flex: 1; min-width: 0; }
   .row-main { font-size: 11px; color: var(--text-secondary); margin: 0; }
   .row-verify { font-size: 9px; margin: 1px 0 0; }

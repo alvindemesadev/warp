@@ -12,7 +12,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Rust](https://img.shields.io/badge/Rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/Version-1.1.4-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
+[![Version](https://img.shields.io/badge/Version-1.2.0-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-30d158.svg)](#license)
 
 <img src="docs/screenshot.png" alt="Warp UI" width="640" />
@@ -26,6 +26,9 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 | Feature | Details |
 |---|---|
 | **3 transfer modes** | Copy, Move, Sync |
+| **Parallel workers** | Copies/moves large multi-folder jobs with 2–8 concurrent robocopy workers (Auto picks from drive types; Sync & throttled jobs stay single for accuracy) |
+| **Pause / Resume** | Pause stops new folder dispatch and finishes active ones; Resume continues the queue |
+| **Auto-retry** | Failed shards re-run sequentially up to twice — robocopy skips what already arrived, only missing/locked files are retried |
 | **Drag & drop** | Drop folders directly onto the window |
 | **Browse button** | Native folder picker dialog |
 | **Real overall progress** | Accurate 0–100% based on total bytes, not per-file |
@@ -66,8 +69,8 @@ Current release installers (generated locally by `npm run build:win`, not commit
 
 | File | Size | Description |
 |---|---|---|
-| `docs/Warp_1.1.4_x64-setup.exe` | 4.6 MB | Windows installer (recommended) |
-| `docs/Warp_1.1.4_x64_en-US.msi` | 6.3 MB | MSI installer |
+| `docs/Warp_1.2.0_x64-setup.exe` | 4.7 MB | Windows installer (recommended) |
+| `docs/Warp_1.2.0_x64_en-US.msi` | 6.3 MB | MSI installer |
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
 
@@ -155,7 +158,7 @@ node scripts/build.js
 
 Output installer:
 ```
-src-tauri/target/release/bundle/nsis/Warp_1.1.4_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Warp_1.2.0_x64-setup.exe
 ```
 
 ### Development (hot reload)
@@ -221,6 +224,30 @@ warp/
 5. Speed = bytes transferred in the last 400ms window
 6. ETA = remaining bytes / current speed
 
+### How parallel transfers work
+
+For eligible jobs (Copy/Move, no throttle, ≥2 top-level folders, ≥400 files or
+an explicit worker choice), Warp partitions the source into **disjoint folder
+shards** and runs one robocopy process per shard through a bounded worker pool:
+
+1. **Partition** — each immediate child directory becomes a shard; loose root
+   files form an extra `/LEV:1` shard; a dominant child (>40% of job bytes,
+   >512 MB) is recursively split so one huge folder can't serialize the job.
+   Disjointness is structural: no two workers ever touch the same source file
+   or destination subtree.
+2. **Worker pool** — Auto picks 6 workers local, 3 for network, 2 for USB;
+   per-worker `/MT` drops to 4–8 so the total thread budget stays near the old
+   single-process `/MT:32`.
+3. **Aggregate progress** — one shared tracker merges byte deltas from all
+   children (same EWMA speed math and emit throttling as sequential mode).
+4. **Retry** — failed shards re-run sequentially; robocopy's skip logic means
+   only missing files are re-copied.
+5. **Pause** — a dispatch gate: active folders finish, nothing new starts.
+
+Sync (`/MIR`) and throttled jobs always run through the single-process engine —
+concurrent mirrors could delete another worker's destination, and `/IPG` caps
+are per-process.
+
 ### How verify works
 
 After a successful copy or sync, an optional second `robocopy /L` pass re-compares
@@ -241,7 +268,10 @@ The robocopy child process handle is stored in `Mutex<Option<Child>>` in Tauri's
 - **OneDrive virtual files** — files not yet downloaded locally will transfer as 0-byte placeholders.
 - **Verify is structural, not hash-based** — the verify pass confirms every file exists in the destination with a matching size and timestamp (a robocopy `/L` re-compare). It does not compute byte-for-byte checksums.
 - **Throttle is approximate** — bandwidth limiting uses robocopy's `/IPG` (inter-packet gap) and runs single-threaded, so the cap is a close approximation rather than an exact ceiling.
+- **Parallel pause granularity** — pausing finishes the folders currently being copied before idling workers; it does not freeze a file mid-copy.
+- **Parallel is off for Sync and throttled jobs** — by design (see "How parallel transfers work").
 - **Non-English Windows** — robocopy's status words are localized, but Warp parses robocopy's tab-delimited column layout (identical in every locale) plus the locale-independent `N (0x…)` error codes, so progress, totals, and file names stay accurate anywhere. The Same/ERROR *classification* is best-effort word matching on non-English systems, and the verify pass falls back to robocopy's exit code so it can never silently pass when files differ.
+- **Log file location** — Warp appends transfer events to `%TEMP%\warp.log` (e.g. `C:\Users\you\AppData\Local\Temp\warp.log`) for diagnosing failed scans or blocked transfers.
 
 ---
 
@@ -299,7 +329,7 @@ tag runs `.github/workflows/release.yml` (free on GitHub Actions), which builds
 the installers and publishes a draft GitHub Release:
 
 ```bash
-git tag v1.1.4
+git tag v1.2.0
 git push --tags
 ```
 

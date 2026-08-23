@@ -14,7 +14,7 @@
       class="input" aria-label="Preset name" />
     <div class="actions">
       <button onclick={onCancel} class="btn btn--ghost">Cancel</button>
-      <button onclick={onSave} disabled={!name.trim()} class="btn btn--primary" style:opacity={name.trim() ? '1' : '0.5'}>Save</button>
+      <button onclick={onSave} disabled={!name.trim()} class="btn btn--primary">Save</button>
     </div>
   </div>
 </div>
@@ -32,4 +32,5 @@
   .btn--ghost:hover { background: rgba(255,255,255,0.05); }
   .btn--primary { border: none; background: var(--accent); color: white; font-weight: 600; }
   .btn--primary:hover { background: var(--accent-hover); }
+  .btn--primary:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

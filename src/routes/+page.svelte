@@ -39,6 +39,7 @@
   let folderMode = $state<FolderMode>("into");
   let throttle   = $state(0);
   let verify     = $state(false);
+  let workers    = $state(0); // parallel workers: 0 = Auto, 2..=8 explicit
 
   let progress    = $state(0);
   let currentFile = $state("");
@@ -47,6 +48,10 @@
   let filesTotal  = $state(0);
   let etaSeconds  = $state(0);
   let transferredFiles = $state<string[]>([]);
+  let liveWorkers = $state(0);
+  let shardsDone  = $state(0);
+  let shardsTotal = $state(0);
+  let paused      = $state(false);
 
   let isProcessing = $state(false);
   let isScanning   = $state(false);
@@ -70,6 +75,7 @@
   let showQueueSummary = $state(false);
   let queueCancelled = $state(false);
   let _jobId = 0;
+  let _runId = 0; // generation counter — stale transfer results must not clobber newer UI state
   let presets = $state<Preset[]>([]);
   let showPresets = $state(false);
   let customSpeed = $state(false);
@@ -99,6 +105,9 @@
         filesDone  = payload.filesDone;
         filesTotal = payload.filesTotal;
         isIndeterminate = payload.indeterminate;
+        liveWorkers = payload.activeWorkers ?? 0;
+        shardsDone  = payload.shardsDone ?? 0;
+        shardsTotal = payload.shardsTotal ?? 0;
         if (payload.currentFile) {
           transferredFiles = [basename(payload.currentFile), ...transferredFiles].slice(0, 200);
         }
@@ -207,9 +216,14 @@
   }
   async function startWarp() {
     if (!sourcePath || !destPath || isProcessing) return;
+    const id = ++_runId;
     isProcessing = true; progress = 0; speed = ""; filesDone = 0; filesTotal = 0; etaSeconds = 0; transferredFiles = []; isVerifying = false; currentFile = "Scanning…"; lastSummary = null; errorLogs = [];
+    paused = false; liveWorkers = 0; shardsDone = 0; shardsTotal = 0;
     try {
-      const s = await invoke<WarpSummary>("warp_file_op", { source: sourcePath, destination: destPath, mode, conflict, folderMode, throttle, verify });
+      const s = await invoke<WarpSummary>("warp_file_op", { source: sourcePath, destination: destPath, mode, conflict, folderMode, throttle, verify, workers });
+      // A cancelled job resolves after the user may have started something new
+      // (or reset) — only apply results that belong to the current run.
+      if (id !== _runId) return;
       lastSummary = s;
       if (!s.cancelled) {
         progress = 100; currentFile = ""; isIndeterminate = false;
@@ -217,13 +231,30 @@
         notifyDone(s);
       } else { progress = 0; isIndeterminate = false; }
     } catch (err) {
+      if (id !== _runId) return;
       lastSummary = { totalFiles: 0, transferred: 0, skipped: 0, failed: 0, durationMs: 0, bytesTransferred: 0, cancelled: false, errorCode: -1, errorMessage: `Could not start the transfer: ${String(err)}`, verified: false, verifyMismatches: 0 };
       isIndeterminate = false;
-    } finally { isProcessing = false; isVerifying = false; }
+    } finally {
+      if (id === _runId) { isProcessing = false; isVerifying = false; }
+    }
   }
+
   async function cancelTransfer() {
-    await invoke("cancel_warp");
-    isProcessing = false; isVerifying = false; currentFile = "Cancelled"; progress = 0; isIndeterminate = false;
+    // Show feedback immediately but leave isProcessing alone — whichever
+    // warp_file_op call is pending finalizes UI state when the killed
+    // robocopy returns its summary. Flipping flags here would let a new
+    // transfer start while the old invoke is still resolving.
+    currentFile = "Cancelling…";
+    paused = false;
+    try { await invoke("cancel_warp"); } catch {}
+  }
+
+  async function togglePause() {
+    const next = !paused;
+    try {
+      await invoke("pause_warp", { paused: next });
+      paused = next;
+    } catch {}
   }
   function reset() {
     sourcePath = destPath = ""; sourceInfo = destInfo = null;
@@ -231,9 +262,10 @@
     isProcessing = false; isScanning = false; isScanningDest = false; isVerifying = false; isIndeterminate = false;
     lastSummary = null; errorLogs = []; dragTarget = null; isDragging = false; dropConflict = false;
     showSyncWarning = false; showQueueSummary = false; queueResults = []; queueCancelled = false;
+    paused = false; liveWorkers = 0; shardsDone = 0; shardsTotal = 0;
   }
   function currentJobConfig(): Omit<QueueJob, "id"> {
-    return { source: sourcePath, dest: destPath, mode, conflict, folderMode, throttle, verify };
+    return { source: sourcePath, dest: destPath, mode, conflict, folderMode, throttle, verify, workers };
   }
   function addToQueue() {
     if (!canStart) return;
@@ -251,10 +283,11 @@
     isQueueRunning = true; queueResults = []; queueTotal = jobs.length; queueCancelled = false; lastSummary = null; showQueueSummary = false;
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i]; queueIndex = i + 1;
-      sourcePath = job.source; destPath = job.dest; mode = job.mode; conflict = job.conflict; folderMode = job.folderMode; throttle = job.throttle; syncSpeedMode(job.throttle); verify = job.verify;
+      sourcePath = job.source; destPath = job.dest; mode = job.mode; conflict = job.conflict; folderMode = job.folderMode; throttle = job.throttle; syncSpeedMode(job.throttle); verify = job.verify; workers = job.workers ?? 0;
       isProcessing = true; progress = 0; speed = ""; filesDone = 0; filesTotal = 0; etaSeconds = 0; transferredFiles = []; isVerifying = false; currentFile = "Scanning…"; errorLogs = [];
+      paused = false; liveWorkers = 0; shardsDone = 0; shardsTotal = 0;
       try {
-        const s = await invoke<WarpSummary>("warp_file_op", { source: job.source, destination: job.dest, mode: job.mode, conflict: job.conflict, folderMode: job.folderMode, throttle: job.throttle, verify: job.verify });
+        const s = await invoke<WarpSummary>("warp_file_op", { source: job.source, destination: job.dest, mode: job.mode, conflict: job.conflict, folderMode: job.folderMode, throttle: job.throttle, verify: job.verify, workers: job.workers ?? 0 });
         queueResults = [...queueResults, s];
         if (s.cancelled) { queueCancelled = true; isProcessing = false; break; }
         saveRecent({ source: job.source, dest: job.dest, mode: job.mode, transferred: s.transferred, bytes: s.bytesTransferred, duration_ms: s.durationMs, timestamp: Date.now() });
@@ -279,7 +312,7 @@
     presets = next; persistPresets(next); showPresetModal = false;
   }
   function loadPreset(p: Preset) {
-    setSource(p.source); setDest(p.dest); mode = p.mode; conflict = p.conflict; folderMode = p.folderMode; throttle = p.throttle ?? 0; syncSpeedMode(throttle); verify = p.verify ?? false; showPresets = false;
+    setSource(p.source); setDest(p.dest); mode = p.mode; conflict = p.conflict; folderMode = p.folderMode; throttle = p.throttle ?? 0; syncSpeedMode(throttle); verify = p.verify ?? false; workers = p.workers ?? 0; showPresets = false;
   }
   function deletePreset(name: string) { const next = presets.filter((p) => p.name !== name); presets = next; persistPresets(next); }
   function saveRecent(entry: RecentEntry) { const updated = [entry, ...recentTransfers].slice(0, 5); recentTransfers = updated; persistRecent(updated); }
@@ -325,9 +358,14 @@
         }
       });
       updateState = "installing";
-    } catch { updateState = "installing"; }
+    } catch {
+      // Download failed — surface it instead of pretending to install.
+      // State returns to "idle" so the modal offers a retry button.
+      updateState = "idle";
+      showToast("Update download failed — check your connection and try again");
+    }
   }
-  let APP_VERSION = $state("1.1.4");
+  let APP_VERSION = $state("1.2.0");
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
     { id: "move", label: "Move", desc: "Transfer and remove from source" },
@@ -387,7 +425,7 @@
   <PresetNameModal bind:name={presetName} onCancel={() => showPresetModal = false} onSave={confirmSavePreset} />
 {/if}
 {#if showUpdateModal && updateInfo}
-  <UpdateModal version={updateInfo.version} currentVersion={APP_VERSION} body={updateInfo.body ?? ""} state={updateState} progress={updateProgress} onDismiss={() => showUpdateModal = false} onInstall={installUpdate} />
+  <UpdateModal version={updateInfo.version} currentVersion={APP_VERSION} body={updateInfo.body ?? ""} phase={updateState} progress={updateProgress} onDismiss={() => showUpdateModal = false} onInstall={installUpdate} />
 {/if}
 <Toast message={toast} />
 
@@ -412,7 +450,7 @@
       <ModePicker bind:mode />
 
       <OptionsPanel
-        bind:folderMode bind:conflict bind:throttle bind:verify bind:customSpeed bind:customSpeedValue
+        bind:folderMode bind:conflict bind:throttle bind:verify bind:customSpeed bind:customSpeedValue bind:workers
         {mode} {destPath} {sourcePath}
       />
 
@@ -445,7 +483,11 @@
       {/if}
 
       {#if isProcessing}
-        <ProgressCard {progress} {currentFile} {speed} {filesDone} {filesTotal} {etaSeconds} {isIndeterminate} {isQueueRunning} {queueIndex} {queueTotal} {sourcePath} {destPath} {transferredFiles} onCancel={cancelTransfer} />
+        <ProgressCard
+          {progress} {currentFile} {speed} {filesDone} {filesTotal} {etaSeconds} {isIndeterminate} {isQueueRunning} {queueIndex} {queueTotal} {sourcePath} {destPath} {transferredFiles}
+          onCancel={cancelTransfer}
+          activeWorkers={liveWorkers} {shardsDone} {shardsTotal} {paused} onTogglePause={togglePause}
+        />
       {:else if queue.length > 0}
         <button onclick={runQueue} class="engage engage--accent">Run Queue ({queue.length}{canStart ? ' + current' : ''} {queue.length + (canStart ? 1 : 0) === 1 ? 'job' : 'jobs'})</button>
       {:else}

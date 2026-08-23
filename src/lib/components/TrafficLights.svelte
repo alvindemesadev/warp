@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
   let {
@@ -21,16 +22,16 @@
 
   const win = getCurrentWindow();
 
-  function handleClose() {
+  async function handleClose() {
     if (isProcessing) {
       // Guard: orphan robocopy would keep running if window closed mid-transfer
       const ok = window.confirm("Transfer in progress — close Warp and cancel the transfer?");
       if (!ok) return;
-      // Best-effort cancel before close; child will be killed via mutex
-      try { win.close(); } catch {}
-      return;
+      // Kill the backend child process BEFORE the window goes away. The Rust
+      // side also kills on window destroy/app exit as a safety net.
+      try { await invoke("cancel_warp"); } catch {}
     }
-    win.close();
+    try { win.close(); } catch {}
   }
 </script>
 

@@ -63,7 +63,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 ## Download
 
-**[⬇ Download Warp](https://warp-desktop.pages.dev/)** — get the latest installer straight from the website (or from the [GitHub Releases](https://github.com/alvindemesadev/warp/releases) page).
+**[⬇ Download Warp](https://getwarp-app.pages.dev/)** — get the latest installer straight from the website (or from the [GitHub Releases](https://github.com/alvindemesadev/warp/releases) page).
 
 Current release installers (generated locally by `npm run build:win`, not committed to git). Sizes below are read from the real files by `node scripts/readme-download.js` — re-run it after each build to keep them accurate:
 

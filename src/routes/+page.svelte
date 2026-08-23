@@ -365,7 +365,7 @@
       showToast("Update download failed — check your connection and try again");
     }
   }
-  let APP_VERSION = $state("1.2.0");
+  let APP_VERSION = $state("1.2.1");
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
     { id: "move", label: "Move", desc: "Transfer and remove from source" },
@@ -438,6 +438,14 @@
 
     {#if showQueueSummary}
       <QueueSummary results={queueResults} cancelled={queueCancelled} onDone={reset} />
+    {:else if isProcessing}
+      <!-- Focus mode: the card owns the window while transferring. The setup
+           form stays mounted below only when idle, so nothing can overlap. -->
+      <ProgressCard
+        {progress} {currentFile} {speed} {filesDone} {filesTotal} {etaSeconds} {isIndeterminate} {isQueueRunning} {queueIndex} {queueTotal} {sourcePath} {destPath} {transferredFiles}
+        onCancel={cancelTransfer}
+        activeWorkers={liveWorkers} {shardsDone} {shardsTotal} {paused} onTogglePause={togglePause}
+      />
     {:else if !lastSummary}
       <PathCard
         {sourcePath} {destPath} {sourceInfo} {destInfo} {isScanning} {isScanningDest} {dragTarget} {isDragging}
@@ -482,30 +490,22 @@
         </div>
       {/if}
 
-      {#if isProcessing}
-        <ProgressCard
-          {progress} {currentFile} {speed} {filesDone} {filesTotal} {etaSeconds} {isIndeterminate} {isQueueRunning} {queueIndex} {queueTotal} {sourcePath} {destPath} {transferredFiles}
-          onCancel={cancelTransfer}
-          activeWorkers={liveWorkers} {shardsDone} {shardsTotal} {paused} onTogglePause={togglePause}
-        />
-      {:else if queue.length > 0}
+      {#if queue.length > 0}
         <button onclick={runQueue} class="engage engage--accent">Run Queue ({queue.length}{canStart ? ' + current' : ''} {queue.length + (canStart ? 1 : 0) === 1 ? 'job' : 'jobs'})</button>
       {:else}
         <button onclick={handleStart} disabled={!canStart} class="engage" class:engage--accent={canStart} class:engage--disabled={!canStart}>{startLabel}</button>
       {/if}
 
-      {#if !isProcessing}
-        <p class="hint">
-          {#if sourcePath && destPath && sourceInfo && !sourceInfo.isFile && !destInfo?.isFile}
-            {@const effectiveDest = folderMode === 'into' && basename(destPath).toLowerCase() !== basename(sourcePath).toLowerCase() ? destPath.replace(/\\+$/, '') + '\\' + basename(sourcePath) : destPath}
-            → <span class="mono">{effectiveDest}</span>
-          {:else if sourcePath && !destPath}
-            Now drop or browse a destination folder
-          {:else if !sourcePath}
-            Drop folders onto the window, or use the browse links
-          {/if}
-        </p>
-      {/if}
+      <p class="hint">
+        {#if sourcePath && destPath && sourceInfo && !sourceInfo.isFile && !destInfo?.isFile}
+          {@const effectiveDest = folderMode === 'into' && basename(destPath).toLowerCase() !== basename(sourcePath).toLowerCase() ? destPath.replace(/\\+$/, '') + '\\' + basename(sourcePath) : destPath}
+          → <span class="mono">{effectiveDest}</span>
+        {:else if sourcePath && !destPath}
+          Now drop or browse a destination folder
+        {:else if !sourcePath}
+          Drop folders onto the window, or use the browse links
+        {/if}
+      </p>
     {:else}
       <ResultCards summary={lastSummary} {mode} {sourcePath} {destPath} {errorLogs} onReset={reset} />
     {/if}

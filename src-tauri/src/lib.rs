@@ -1386,14 +1386,19 @@ trait ShardSink: Send + Sync {
 
 struct WindowSink {
     window: Window,
-    active_workers: u32,
     shards_total: u32,
+    /// Workers currently running a shard — decays as the queue drains.
+    live_workers: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Shards fully completed.
+    done_shards: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 impl ShardSink for WindowSink {
     fn progress(&self, p: &WarpProgress) {
+        use std::sync::atomic::Ordering;
         let mut p = p.clone();
-        p.active_workers = self.active_workers;
+        p.active_workers = self.live_workers.load(Ordering::SeqCst);
         p.shards_total = self.shards_total;
+        p.shards_done = self.done_shards.load(Ordering::SeqCst);
         let _ = self.window.emit("warp-progress", p);
     }
     fn error_line(&self, s: &str) {
@@ -1527,12 +1532,15 @@ fn transfer_parallel(
     let tracker = Mutex::new(pool::Tracker::new(total_bytes, total_files_scan, total_bytes == 0, false));
     let queue: Mutex<VecDeque<shards::Shard>> = Mutex::new(shard_list.into_iter().collect());
     let outcomes: Mutex<Vec<pool::ShardOutcome>> = Mutex::new(Vec::new());
-    let done_counter = std::sync::atomic::AtomicU32::new(0);
+    use std::sync::atomic::AtomicU32;
+    let live_workers = std::sync::Arc::new(AtomicU32::new(0));
+    let done_shards = std::sync::Arc::new(AtomicU32::new(0));
 
     let sink: std::sync::Arc<dyn ShardSink> = std::sync::Arc::new(WindowSink {
         window: window.clone(),
-        active_workers: workers as u32,
         shards_total,
+        live_workers: live_workers.clone(),
+        done_shards: done_shards.clone(),
     });
 
     let mt_per_worker: u32 = if usb { 4 } else { 8 };
@@ -1560,9 +1568,12 @@ fn transfer_parallel(
                     mt_per_worker,
                 );
                 log_event(&format!("shard {} start {}", shard.id, shard.src));
-                match run_shard(control, shard.id, &args, Some(&tracker), sink.clone()) {
+                live_workers.fetch_add(1, Ordering::SeqCst);
+                let outcome = run_shard(control, shard.id, &args, Some(&tracker), sink.clone());
+                live_workers.fetch_sub(1, Ordering::SeqCst);
+                match outcome {
                     Ok(outcome) => {
-                        done_counter.fetch_add(1, Ordering::SeqCst);
+                        done_shards.fetch_add(1, Ordering::SeqCst);
                         lock_ok(&outcomes).push(outcome);
                     }
                     Err(e) => log_event(&format!("shard {} spawn failed: {}", shard.id, e)),
@@ -1630,8 +1641,14 @@ fn transfer_parallel(
             // reflects exactly one completed pass over this shard afterwards.
             lock_ok(&tracker).revert_bytes(prev.counted_bytes);
             let args = pool::shard_args(&src, &dst, skip_conflict, root_only, move_mode, mt_per_worker);
-            match run_shard(control, id, &args, Some(&tracker), sink.clone()) {
+            live_workers.fetch_add(1, Ordering::SeqCst);
+            let retried = run_shard(control, id, &args, Some(&tracker), sink.clone());
+            live_workers.fetch_sub(1, Ordering::SeqCst);
+            match retried {
                 Ok(fresh) => {
+                    if fresh.failed == 0 {
+                        done_shards.fetch_add(1, Ordering::SeqCst);
+                    }
                     retried_ok += pool::recovered_from_retry(prev.failed, fresh.failed);
                     let mut outs = lock_ok(&outcomes);
                     if let Some(slot) = outs.iter_mut().find(|o| o.id == id) {

@@ -12,7 +12,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Rust](https://img.shields.io/badge/Rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/Version-1.2.0-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
+[![Version](https://img.shields.io/badge/Version-1.2.1-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-30d158.svg)](#license)
 
 <img src="docs/screenshot.png" alt="Warp UI" width="640" />
@@ -69,8 +69,8 @@ Current release installers (generated locally by `npm run build:win`, not commit
 
 | File | Size | Description |
 |---|---|---|
-| `docs/Warp_1.2.0_x64-setup.exe` | 4.7 MB | Windows installer (recommended) |
-| `docs/Warp_1.2.0_x64_en-US.msi` | 6.3 MB | MSI installer |
+| `docs/Warp_1.2.1_x64-setup.exe` | 4.7 MB | Windows installer (recommended) |
+| `docs/Warp_1.2.1_x64_en-US.msi` | 6.3 MB | MSI installer |
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
 
@@ -158,7 +158,7 @@ node scripts/build.js
 
 Output installer:
 ```
-src-tauri/target/release/bundle/nsis/Warp_1.2.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Warp_1.2.1_x64-setup.exe
 ```
 
 ### Development (hot reload)
@@ -329,7 +329,7 @@ tag runs `.github/workflows/release.yml` (free on GitHub Actions), which builds
 the installers and publishes a draft GitHub Release:
 
 ```bash
-git tag v1.2.0
+git tag v1.2.1
 git push --tags
 ```
 

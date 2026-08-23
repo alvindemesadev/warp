@@ -41,14 +41,19 @@
       <div class="fill" bind:this={fillEl}></div>
     {/if}
   </div>
-  {#if activeWorkers > 1 || paused}
+  {#if (activeWorkers ?? 0) > 0 || paused}
     <div class="pool-line">
-      {#if activeWorkers > 1}
-        <span class="pool-chip pool-chip--workers">⚡ {activeWorkers} workers</span>
+      {#if (activeWorkers ?? 0) > 1}
+        <span class="pool-chip pool-chip--workers">⚡ {activeWorkers} copying in parallel</span>
+        {#if (shardsTotal ?? 0) > 0}
+          <span class="pool-chip">{shardsDone}/{shardsTotal} folders</span>
+        {/if}
+      {:else if (activeWorkers ?? 0) === 1 && (shardsTotal ?? 0) > 0 && shardsDone < (shardsTotal ?? 0)}
+        <span class="pool-chip pool-chip--workers">⚡ finishing last folder</span>
         <span class="pool-chip">{shardsDone}/{shardsTotal} folders</span>
       {/if}
       {#if paused}
-        <span class="pool-chip pool-chip--paused">⏸ Paused — finishing active folder{activeWorkers > 1 ? "s" : ""}</span>
+        <span class="pool-chip pool-chip--paused">⏸ Paused — finishing active folder{(activeWorkers ?? 0) > 1 ? "s" : ""}</span>
       {/if}
     </div>
   {/if}

@@ -47,7 +47,13 @@
 
     {#if phase === "downloading"}
       <div class="dl">
-        <div class="bar"><div class="fill" class:fill--indet={progress === 0} bind:this={fillEl}></div></div>
+        <div class="bar">
+          {#if progress === 0}
+            <div class="fill fill--indet"></div>
+          {:else}
+            <div class="fill" bind:this={fillEl}></div>
+          {/if}
+        </div>
         <p class="dl-label">{progress > 0 ? `${progress}%` : "Downloading installer…"}</p>
       </div>
     {:else if phase === "installing"}
@@ -79,10 +85,10 @@
   .notes { max-height: 140px; overflow-y: auto; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
   .notes-text { font-size: 11px; color: var(--text-secondary); line-height: 1.55; margin: 0; white-space: pre-wrap; word-break: break-word; }
   .dl { margin-bottom: 14px; }
-  .bar { height: 4px; background: rgba(255,255,255,0.08); border-radius: 100px; overflow: hidden; }
-  .fill { height: 100%; width: var(--p, 100%); background: linear-gradient(90deg,var(--accent),#5e5ce6); border-radius: 100px; transition: width 0.3s; }
-  .fill--indet { width: 100%; animation: dl-indeterminate 1.2s ease-in-out infinite; }
-  @keyframes dl-indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+  .bar { height: 4px; background: rgba(255,255,255,0.08); border-radius: 100px; overflow: hidden; position: relative; }
+  .fill { height: 100%; width: var(--p, 0%); background: linear-gradient(90deg,var(--accent),#5e5ce6); border-radius: 100px; transition: width 0.45s cubic-bezier(0.4,0,0.2,1); }
+  .fill--indet { width: 42% !important; animation: dl-indeterminate 1.1s cubic-bezier(0.45,0,0.55,1) infinite; }
+  @keyframes dl-indeterminate { 0% { transform: translateX(-110%); } 50% { transform: translateX(120%); } 100% { transform: translateX(-110%); } }
   .dl-label { font-size: 10px; color: var(--text-tertiary); margin: 7px 0 0; text-align: center; }
   .installed { display: flex; align-items: center; gap: 9px; background: rgba(48,209,88,0.08); border: 1px solid rgba(48,209,88,0.2); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
   .spinner { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; border: 2px solid rgba(48,209,88,0.25); border-top-color: var(--green); animation: spin-smooth 1.2s linear infinite; }

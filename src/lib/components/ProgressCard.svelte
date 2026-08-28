@@ -72,10 +72,10 @@
   </div>
   {#if transferredFiles.length > 0}
     <div class="live">
-      <p class="live-title">Transferring files</p>
+      <p class="live-title">Transferring files — {Math.min(transferredFiles.length, 5)} of {transferredFiles.length} recent</p>
       <div class="live-list">
-        {#each transferredFiles.slice(0, 60) as f}
-          <p class="live-file">{f}</p>
+        {#each transferredFiles.slice(0, 5) as f, i}
+          <p class="live-file" class:live-file--new={i === 0} title={f}>{f}</p>
         {/each}
       </div>
     </div>
@@ -107,8 +107,18 @@
   .cancel:hover { background: rgba(255,69,58,0.2); }
   .pausebtn { font-size: 9px; font-weight: 700; color: var(--yellow); background: rgba(255,214,10,0.08); border: 1px solid rgba(255,214,10,0.22); border-radius: 5px; padding: 2px 7px; cursor: pointer; letter-spacing: 0.04em; font-family: var(--font-sf); }
   .pausebtn:hover { background: rgba(255,214,10,0.18); }
-  .live { border-top: 1px solid var(--glass-border); padding-top: 8px; margin-top: 1px; }
-  .live-title { font-size: 9px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 5px; }
-  .live-list { max-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
-  .live-file { font-size: 10px; font-family: monospace; color: var(--text-tertiary); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .live { border-top: 1px solid var(--glass-border); padding-top: 10px; margin-top: 2px; min-width: 0; }
+  .live-title { font-size: 10px; font-weight: 700; color: #FFFFFF; letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 8px; opacity: 1; }
+  .live-list {
+    display: block; padding: 6px; background: #1A1A1E; border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px; overflow: hidden;
+  }
+  .live-file {
+    display: block; font-size: 12px; font-family: Consolas, monospace; font-weight: 500;
+    color: #FFFFFF; margin: 0; padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.4; background: rgba(255,255,255,0.07); border-radius: 6px; margin-bottom: 4px;
+  }
+  .live-file:last-child { margin-bottom: 0; }
+  .live-file--new { color: #FFFFFF; background: rgba(10,132,255,0.18); border: 1px solid rgba(10,132,255,0.30); font-weight: 700; }
+  .live-file:hover { background: rgba(255,255,255,0.11); }
 </style>

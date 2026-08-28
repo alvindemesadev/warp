@@ -2,7 +2,7 @@ name: release
 
 # Builds Warp and publishes a draft GitHub Release with the installers.
 # Unsigned (free) — users bypass SmartScreen via "More info -> Run anyway".
-# Triggered by pushing a version tag, e.g.  git tag v1.2.1 && git push --tags
+# Triggered by pushing a version tag, e.g.  git tag v1.2.2 && git push --tags
 on:
   push:
     tags:

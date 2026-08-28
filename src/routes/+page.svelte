@@ -349,6 +349,8 @@
   async function installUpdate() {
     if (!_pendingUpdate || updateState === "downloading" || updateState === "installing") return;
     updateState = "downloading"; updateProgress = 0; let downloaded = 0; let contentLength = 0;
+    const dlStart = Date.now();
+    const MIN_DL_MS = 1600;
     try {
       await _pendingUpdate.downloadAndInstall((event) => {
         switch (event.event) {
@@ -357,15 +359,18 @@
           case "Finished": updateProgress = 100; break;
         }
       });
+      const elapsed = Date.now() - dlStart;
+      if (elapsed < MIN_DL_MS) await new Promise(r => setTimeout(r, MIN_DL_MS - elapsed));
       updateState = "installing";
+      await new Promise(r => setTimeout(r, 900));
     } catch {
-      // Download failed — surface it instead of pretending to install.
-      // State returns to "idle" so the modal offers a retry button.
+      const elapsed = Date.now() - dlStart;
+      if (elapsed < MIN_DL_MS) await new Promise(r => setTimeout(r, MIN_DL_MS - elapsed));
       updateState = "idle";
       showToast("Update download failed — check your connection and try again");
     }
   }
-  let APP_VERSION = $state("1.2.1");
+  let APP_VERSION = $state("1.2.2");
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
     { id: "move", label: "Move", desc: "Transfer and remove from source" },
@@ -521,7 +526,7 @@
 
 <style>
   .page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 36px 20px 20px; font-family: var(--font-sf); cursor: default; }
-  .shell { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 14px; }
+  .shell { width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 14px; }
   .header { text-align: center; margin-bottom: 2px; }
   .header-title { font-size: 40px; font-weight: 700; letter-spacing: -0.04em; color: var(--text-primary); margin: 0; line-height: 1; cursor: default; user-select: none; }
   .header-sub { margin: 5px 0 0; font-size: 12px; font-weight: 500; color: var(--text-tertiary); }

@@ -26,7 +26,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 | Feature | Details |
 |---|---|
 | **3 transfer modes** | Copy, Move, Sync |
-| **Parallel workers** | Copies/moves large multi-folder jobs with 2–8 concurrent robocopy workers (Auto picks from drive types; Sync & throttled jobs stay single for accuracy) |
+| **Parallel workers** | Copies/moves large multi-folder jobs with 2–8 concurrent robocopy workers (Auto picks from drive types; Sync & throttled jobs stay single for accuracy) — we split your folders into 8 lanes, so it copies in parallel. One lane would crawl, eight just flies |
 | **Pause / Resume** | Pause stops new folder dispatch and finishes active ones; Resume continues the queue |
 | **Auto-retry** | Failed shards re-run sequentially up to twice — robocopy skips what already arrived, only missing/locked files are retried |
 | **Drag & drop** | Drop folders directly onto the window |

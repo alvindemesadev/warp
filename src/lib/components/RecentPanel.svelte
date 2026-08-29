@@ -26,7 +26,7 @@
 <style>
   .overlay { position: fixed; inset: 0; z-index: 100; }
   .backdrop { position: fixed; inset: 0; border: none; padding: 0; margin: 0; background: rgba(0,0,0,0.5); cursor: default; }
-  .panel { position: absolute; top: 36px; right: 8px; width: 300px; background: #1c1c1e; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; overflow: hidden; }
+  .panel { position: fixed; top: 50px; right: 14px; width: 300px; background: #1c1c1e; border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; overflow: hidden; }
   .head { padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.07); display: flex; align-items: center; justify-content: space-between; }
   .head-title { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.06em; text-transform: uppercase; margin: 0; }
   .clear { font-size: 10px; color: var(--red); background: none; border: none; cursor: pointer; font-family: var(--font-sf); }

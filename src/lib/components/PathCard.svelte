@@ -33,7 +33,7 @@
   {/if}
 
   <!-- Source row -->
-  <div class="row row--source" class:row--drag={dragTarget==='source'}>
+  <div role="button" tabindex="0" class="row row--source" class:row--drag={dragTarget==='source'} onclick={onBrowseSource} onkeydown={(e) => { if (e.key==='Enter'||e.key===' ') { e.preventDefault(); onBrowseSource(); } }}>
     <div class="icon" class:icon--source={!!sourcePath && !sourceInfo?.isFile} class:icon--empty={!sourcePath}>
       <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
         {#if sourcePath && !sourceInfo?.isFile}
@@ -58,11 +58,11 @@
         {#if sourceWarning}<p class="hint hint--warn">⚠ {sourceWarning}</p>{/if}
         {#if sourceUsb}<p class="hint hint--warn">⚠ USB drive — reduced threads for optimal throughput</p>{/if}
       {:else}
-        <p class="placeholder">Drop or <button onclick={onBrowseSource} class="link">browse</button></p>
+        <p class="placeholder">Drop or <span class="link">browse</span></p>
       {/if}
     </div>
     {#if sourcePath}
-      <button onclick={onClearSource} aria-label="Clear source" class="clear"><svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      <button onclick={(e) => { e.stopPropagation(); onClearSource(); }} aria-label="Clear source" class="clear"><svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg></button>
     {/if}
   </div>
 
@@ -74,7 +74,7 @@
   </div>
 
   <!-- Dest row -->
-  <div class="row row--dest" class:row--drag={dragTarget==='dest'}>
+  <div role="button" tabindex="0" class="row row--dest" class:row--drag={dragTarget==='dest'} onclick={onBrowseDest} onkeydown={(e) => { if (e.key==='Enter'||e.key===' ') { e.preventDefault(); onBrowseDest(); } }}>
     <div class="icon" class:icon--dest={!!destPath && !destInfo?.isFile} class:icon--error={!!destPath && destInfo?.isFile} class:icon--empty={!destPath}>
       <svg width="17" height="17" viewBox="0 0 20 20" fill="none">
         {#if destPath && destInfo?.isFile}
@@ -100,11 +100,11 @@
         {#if destWarning}<p class="hint hint--warn">⚠ {destWarning}</p>{/if}
         {#if destUsb}<p class="hint hint--warn">⚠ USB drive — reduced threads for optimal throughput</p>{/if}
       {:else}
-        <p class="placeholder">Drop or <button onclick={onBrowseDest} class="link">browse</button></p>
+        <p class="placeholder">Drop or <span class="link">browse</span></p>
       {/if}
     </div>
     {#if destPath}
-      <button onclick={onClearDest} aria-label="Clear destination" class="clear"><svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      <button onclick={(e) => { e.stopPropagation(); onClearDest(); }} aria-label="Clear destination" class="clear"><svg width="7" height="7" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg></button>
     {/if}
   </div>
 </div>
@@ -113,7 +113,7 @@
   .card { background: var(--glass-bg); border: 1px solid var(--glass-border); backdrop-filter: blur(48px) saturate(180%); border-radius: 16px; overflow: visible; position: relative; transition: border-color 0.15s; }
   .card--drag-active { border-color: rgba(10,132,255,0.5); }
   .card-hint { position: absolute; top: -9px; left: 50%; transform: translateX(-50%); z-index: 20; background: var(--accent); color: #fff; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
-  .row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; transition: background 0.15s; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; transition: background 0.15s; width: 100%; text-align: left; border: none; cursor: pointer; background: transparent; font: inherit; }
   .row--source { border-bottom: 1px solid var(--glass-border); border-radius: 16px 16px 0 0; }
   .row--dest { border-radius: 0 0 16px 16px; }
   .row--drag { background: rgba(10,132,255,0.08); }

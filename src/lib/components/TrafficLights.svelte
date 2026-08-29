@@ -49,14 +49,12 @@
   ><span class="traffic-min">−</span></button>
 
   <div class="traffic-actions">
-    {#if updateState === "checking"}
-      <span class="chip chip--muted">CHECKING…</span>
-    {:else if updateState === "available" && updateVersion}
+    {#if updateState === "available" && updateVersion}
       <button
         onclick={onUpdateOpen}
         title={`Update available — Warp v${updateVersion} is ready to install`}
         class="chip chip--update"
-      >⬆ UPDATE v{updateVersion}</button>
+      >⬆ UPDATE</button>
     {/if}
     {#if recentCount > 0 && !isProcessing && !lastSummary}
       <button
@@ -68,30 +66,35 @@
   </div>
 </div>
 
-<style>
+ <style>
   .traffic-bar {
-    position: fixed; top: 0; left: 0; right: 0; height: 36px; z-index: 50;
-    display: flex; align-items: center; padding: 0 14px; gap: 6px; cursor: default;
+    position: fixed; top: 0; left: 0; right: 0; height: 44px; z-index: 50;
+    display: flex; align-items: center; padding: 6px 14px 0; gap: 8px; cursor: default;
+    background: transparent; border-bottom: none;
   }
   .traffic {
-    width: 12px; height: 12px; border-radius: 50%; border: none; padding: 0;
+    width: 13px; height: 13px; border-radius: 50%; border: none; padding: 0;
     cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.22); transition: transform 0.12s, filter 0.12s;
+    margin-top: -8px;
   }
-  .traffic--red { background: var(--red); }
-  .traffic--yellow { background: var(--yellow); }
-  .traffic-x { opacity: 0; font-size: 7px; font-weight: 900; color: rgba(0,0,0,0.6); line-height: 1; pointer-events: none; }
-  .traffic-min { opacity: 0; font-size: 9px; font-weight: 900; color: rgba(0,0,0,0.5); line-height: 1; margin-top: -1px; pointer-events: none; }
-  .traffic-actions { margin-left: auto; margin-right: 4px; display: flex; align-items: center; gap: 6px; }
+  .traffic:hover { transform: scale(1.08); filter: brightness(1.1); }
+  .traffic:active { transform: scale(0.96); }
+  .traffic--red { background: #ff5f57; }
+  .traffic--yellow { background: #ffbd2e; }
+  .traffic-x { opacity: 0; font-size: 7px; font-weight: 900; color: rgba(0,0,0,0.65); line-height: 1; pointer-events: none; }
+  .traffic-min { opacity: 0; font-size: 10px; font-weight: 900; color: rgba(0,0,0,0.55); line-height: 1; margin-top: -1px; pointer-events: none; }
+  .traffic-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
   .chip {
-    padding: 2px 6px; border-radius: 5px; border: none; font-size: 9px; font-weight: 600;
-    letter-spacing: 0.04em; font-family: var(--font-sf); cursor: pointer;
+    height: 24px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--glass-border); font-size: 9px; font-weight: 700;
+    letter-spacing: 0.06em; font-family: var(--font-sf); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.05); color: var(--text-secondary); transition: all 0.15s;
   }
-  .chip--muted { color: var(--text-tertiary); background: rgba(255,255,255,0.07); }
   .chip--update {
-    padding: 2px 7px; background: rgba(10,132,255,0.22); color: #64b5ff; font-weight: 700;
+    background: rgba(10,132,255,0.14); color: #64b5ff; border-color: rgba(10,132,255,0.22); font-weight: 700;
     animation: update-pulse 2.2s ease-in-out infinite;
   }
-  .chip--update:hover { background: rgba(10,132,255,0.35); }
-  .chip--recent { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.4); }
-  .chip--recent:hover { color: rgba(255,255,255,0.7); }
+  .chip--update:hover { background: rgba(10,132,255,0.22); color: #7cc4ff; }
+  .chip--recent { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+  .chip--recent:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
 </style>

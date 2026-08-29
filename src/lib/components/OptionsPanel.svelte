@@ -60,35 +60,36 @@
         {/each}
         <button class="seg-btn" class:on={customSpeed} title="Set your own speed limit"
           onclick={() => { customSpeed = true; const n = normalizeThrottleInput(customSpeedValue); throttle = n > 0 ? n : 50; customSpeedValue = throttle; }}>Custom</button>
-        {#if customSpeed}
-          <input class="seg-input" type="number" min="1" max="500" bind:value={customSpeedValue}
-            oninput={() => { const n = normalizeThrottleInput(customSpeedValue); customSpeedValue = n; throttle = n; }}
-            aria-label="Custom speed limit in megabytes per second" />
-          <span class="seg-unit">MB/s</span>
-        {/if}
+        <input class="seg-input seg-input--no-spin" type="number" min="1" max="500" bind:value={customSpeedValue}
+          oninput={() => { const n = normalizeThrottleInput(customSpeedValue); customSpeedValue = n; throttle = n; }}
+          aria-label="Custom speed limit in megabytes per second"
+          class:seg-input--hidden={!customSpeed} />
+        <span class="seg-unit" class:seg-unit--hidden={!customSpeed}>MB/s</span>
       </div>
     </div>
-    <div class="opt-group">
-      <span class="opt-label">Verify</span>
-      <div class="seg" role="group" aria-label="Verify after transfer">
-        <button class="seg-btn" class:on={!verify} title="No verification pass" onclick={() => verify = false}>Off</button>
-        <button class="seg-btn" class:on-green={verify}
-          title="After a copy/sync, re-compare source and destination to confirm every file arrived (size + timestamp check)"
-          onclick={() => verify = true}>On</button>
+  </div>
+  <div class="opts-row">
+    <div class="right-stack">
+      <div class="opt-group">
+        <span class="opt-label">Workers</span>
+        <div class="seg" role="group" aria-label="Parallel workers" class:seg--disabled={mode === "sync"}>
+          {#each WORKER_OPTIONS as opt}
+            <button class="seg-btn" class:on={workers === opt.value} disabled={mode === "sync"}
+              title={mode === "sync" ? "Sync runs as a single job for safety" : opt.title}
+              onclick={() => workers = opt.value}>{opt.label}</button>
+          {/each}
+        </div>
+        <p class="opt-hint" class:opt-hint--disabled={mode === "sync"}>Parallel copies folders concurrently. Sync &amp; throttled jobs always run single.</p>
       </div>
-    </div>
-    <div class="opt-group">
-      <span class="opt-label">Workers</span>
-      <div class="seg" role="group" aria-label="Parallel workers" class:seg--disabled={mode === "sync"}>
-        {#each WORKER_OPTIONS as opt}
-          <button class="seg-btn" class:on={workers === opt.value} disabled={mode === "sync"}
-            title={mode === "sync" ? "Sync runs as a single job for safety" : opt.title}
-            onclick={() => workers = opt.value}>{opt.label}</button>
-        {/each}
+      <div class="opt-group">
+        <span class="opt-label">Verify</span>
+        <div class="seg" role="group" aria-label="Verify after transfer">
+          <button class="seg-btn" class:on={!verify} title="No verification pass" onclick={() => verify = false}>Off</button>
+          <button class="seg-btn" class:on-green={verify}
+            title="After a copy/sync, re-compare source and destination to confirm every file arrived (size + timestamp check)"
+            onclick={() => verify = true}>On</button>
+        </div>
       </div>
-      {#if mode !== "sync"}
-        <p class="opt-hint">Parallel copies folders concurrently. Sync &amp; throttled jobs always run single.</p>
-      {/if}
     </div>
   </div>
 </div>
@@ -99,15 +100,21 @@
   .opts-secondary { opacity: 0.92; }
   .opt-group { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
   .opt-label { font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); padding-left: 3px; }
-  .seg { display: inline-flex; align-items: center; gap: 2px; padding: 3px; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius: 9px; }
-  .seg-btn { padding: 4px 11px; border-radius: 7px; font-size: 11px; font-weight: 600; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background 0.15s, color 0.15s; font-family: var(--font-sf); white-space: nowrap; }
+  .seg { display: inline-flex; align-items: center; gap: 2px; padding: 3px; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius: 9px; min-width: 0; flex-wrap: nowrap; }
+  .seg-btn { padding: 4px 11px; border-radius: 7px; font-size: 11px; font-weight: 600; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background 0.15s, color 0.15s; font-family: var(--font-sf); white-space: nowrap; flex-shrink: 0; }
   .seg-btn:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
   .seg-btn.on { background: rgba(255,255,255,0.16); color: var(--text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.35); }
   .seg-btn.on-green { background: rgba(48,209,88,0.2); color: var(--green); box-shadow: 0 1px 3px rgba(0,0,0,0.35); }
-  .seg-input { width: 56px; padding: 4px 6px; margin-left: 2px; border-radius: 6px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3); color: var(--text-primary); font-size: 11px; font-family: var(--font-sf); outline: none; }
+  .seg-input { width: 56px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3); color: var(--text-primary); font-size: 11px; font-family: var(--font-sf); outline: none; text-align: center; transition: opacity 0.12s, width 0.12s; }
+  .seg-input--hidden { width: 0; padding: 0; border-width: 0; opacity: 0; pointer-events: none; }
+  .seg-input--no-spin::-webkit-outer-spin-button, .seg-input--no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .seg-input--no-spin { -moz-appearance: textfield; appearance: textfield; }
   .seg-input:focus { border-color: var(--accent); }
-  .seg-unit { font-size: 10px; color: var(--text-tertiary); padding: 0 4px; }
+  .seg-unit { font-size: 10px; color: var(--text-tertiary); padding: 0 4px; transition: opacity 0.12s, width 0.12s, padding 0.12s; }
+  .seg-unit--hidden { opacity: 0; pointer-events: none; width: 0; padding: 0; overflow: hidden; }
   .seg--disabled { opacity: 0.45; }
   .seg-btn:disabled { cursor: not-allowed; color: var(--text-tertiary); background: transparent; box-shadow: none; }
-  .opt-hint { font-size: 9px; color: var(--text-tertiary); max-width: 220px; line-height: 1.5; }
+  .right-stack { display: flex; flex-direction: row; gap: 18px; align-items: flex-start; }
+  .opt-hint { font-size: 9px; color: var(--text-tertiary); max-width: 220px; line-height: 1.5; transition: opacity 0.15s, color 0.15s; }
+  .opt-hint--disabled { color: rgba(255,255,255,0.14); opacity: 0.7; }
 </style>

@@ -33,8 +33,8 @@
   }
   .mode-btn {
     flex: 1; padding: 6px 8px; border-radius: 9px; font-size: 12px; font-weight: 600;
-    border: none; cursor: pointer; transition: all 0.15s; outline: none;
-    background: transparent; color: var(--text-tertiary);
+    border: none; cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s; outline: none;
+    background: transparent; color: var(--text-tertiary); transform: none;
   }
   .mode-btn--active {
     background: rgba(255,255,255,0.10); color: var(--text-primary);
@@ -42,6 +42,5 @@
   }
   .mode-btn:not(.mode-btn--active):hover { color: var(--text-secondary); }
   .mode-warn { font-size: 9px; margin-left: 2px; opacity: 0.7; }
-  .mode-desc { text-align: center; font-size: 11px; margin: -6px 0 0; color: var(--text-tertiary); }
-  .mode-desc--warn { color: rgba(255,159,10,0.8); }
+  .mode-desc { text-align: center; font-size: 11px; margin: -6px 0 0; color: var(--text-tertiary); min-height: 14px; }
 </style>

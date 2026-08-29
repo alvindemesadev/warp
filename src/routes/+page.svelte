@@ -12,9 +12,9 @@
   import { normalizeThrottleInput } from "$lib/transfer";
   import type { Mode, Conflict, FolderMode, PathInfo, WarpProgress, WarpSummary, QueueJob, Preset, RecentEntry } from "$lib/types";
 
-  import TrafficLights from "$lib/components/TrafficLights.svelte";
   import Background from "$lib/components/Background.svelte";
   import Toast from "$lib/components/Toast.svelte";
+  import TrafficLights from "$lib/components/TrafficLights.svelte";
   import SyncWarningModal from "$lib/components/SyncWarningModal.svelte";
   import DropConflictModal from "$lib/components/DropConflictModal.svelte";
   import PresetNameModal from "$lib/components/PresetNameModal.svelte";
@@ -370,7 +370,7 @@
       showToast("Update download failed — check your connection and try again");
     }
   }
-  let APP_VERSION = $state("1.2.2");
+  let APP_VERSION = $state("1.2.3");
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
     { id: "move", label: "Move", desc: "Transfer and remove from source" },
@@ -403,15 +403,6 @@
   );
 </script>
 
-<TrafficLights
-  recentCount={recentTransfers.length}
-  isProcessing={isProcessing}
-  lastSummary={lastSummary}
-  updateState={updateState}
-  updateVersion={updateInfo?.version ?? ""}
-  onRecentToggle={() => showRecent = !showRecent}
-  onUpdateOpen={() => showUpdateModal = true}
-/>
 <Background />
 
 {#if showSyncWarning}
@@ -433,6 +424,15 @@
   <UpdateModal version={updateInfo.version} currentVersion={APP_VERSION} body={updateInfo.body ?? ""} phase={updateState} progress={updateProgress} onDismiss={() => showUpdateModal = false} onInstall={installUpdate} />
 {/if}
 <Toast message={toast} />
+<TrafficLights
+  recentCount={recentTransfers.length}
+  isProcessing={isProcessing}
+  lastSummary={lastSummary}
+  updateState={updateState}
+  updateVersion={updateInfo?.version ?? ""}
+  onRecentToggle={() => showRecent = !showRecent}
+  onUpdateOpen={() => showUpdateModal = true}
+/>
 
 <main class="page">
   <div class="shell">
@@ -468,11 +468,11 @@
       />
 
       <div class="actions">
-        <button onclick={openPresetModal} disabled={!sourcePath || !destPath} title="Save the current source, destination, and options as a reusable preset" class="btn-small" class:btn-small--enabled={!!(sourcePath && destPath)}>Save preset</button>
+        <button onclick={openPresetModal} disabled={!sourcePath || !destPath} title="Save the current source, destination, and options as a reusable preset" class="chip chip--action" class:chip--disabled={!sourcePath || !destPath}>SAVE PRESET</button>
         {#if presets.length > 0}
-          <button onclick={() => showPresets = true} class="btn-small btn-small--enabled">Presets ({presets.length})</button>
+          <button onclick={() => showPresets = true} class="chip chip--action">PRESETS ({presets.length})</button>
         {/if}
-        <button onclick={addToQueue} disabled={!canStart} title="Add this transfer to the queue and clear the form for the next one" class="btn-small" class:btn-small--accent={canStart}>+ Add to queue</button>
+        <button onclick={addToQueue} disabled={!canStart} title="Add this transfer to the queue and clear the form for the next one" class="chip chip--action" class:chip--accent={canStart} class:chip--disabled={!canStart}>ADD TO QUEUE</button>
       </div>
 
       {#if queue.length > 0}
@@ -507,8 +507,6 @@
           → <span class="mono">{effectiveDest}</span>
         {:else if sourcePath && !destPath}
           Now drop or browse a destination folder
-        {:else if !sourcePath}
-          Drop folders onto the window, or use the browse links
         {/if}
       </p>
     {:else}
@@ -525,16 +523,25 @@
 </main>
 
 <style>
-  .page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 36px 20px 20px; font-family: var(--font-sf); cursor: default; }
+  .page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 52px 20px 12px; font-family: var(--font-sf); cursor: default; }
   .shell { width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 14px; }
   .header { text-align: center; margin-bottom: 2px; }
+  .chip { height: 26px; padding: 0 9px; border-radius: 7px; border: none; font-size: 9px; font-weight: 600; letter-spacing: 0.04em; font-family: var(--font-sf); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .chip--muted { color: var(--text-tertiary); background: rgba(255,255,255,0.07); }
+  .chip--update { background: rgba(10,132,255,0.22); color: #64b5ff; font-weight: 700; animation: update-pulse 2.2s ease-in-out infinite; }
+  .chip--update:hover { background: rgba(10,132,255,0.35); }
+  .chip--recent { border: 1px solid var(--glass-border); background: rgba(255,255,255,0.04); color: var(--text-secondary); }
+  .chip--recent:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+  .icon-btn { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--glass-border); background: rgba(255,255,255,0.04); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-primary); }
   .header-title { font-size: 40px; font-weight: 700; letter-spacing: -0.04em; color: var(--text-primary); margin: 0; line-height: 1; cursor: default; user-select: none; }
   .header-sub { margin: 5px 0 0; font-size: 12px; font-weight: 500; color: var(--text-tertiary); }
   .actions { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
-  .btn-small { padding: 4px 10px; border-radius: 7px; font-size: 10px; font-weight: 600; border: 1px solid var(--glass-border); background: rgba(255,255,255,0.04); color: var(--text-tertiary); cursor: not-allowed; font-family: var(--font-sf); }
-  .btn-small--enabled { color: var(--text-secondary); cursor: pointer; }
-  .btn-small--accent { border-color: rgba(10,132,255,0.3); background: rgba(10,132,255,0.1); color: var(--accent); cursor: pointer; }
-  .btn-small--accent:disabled { border-color: var(--glass-border); background: rgba(255,255,255,0.04); color: var(--text-tertiary); cursor: not-allowed; }
+  .chip--action { height: 26px; padding: 0 10px; border: 1px solid var(--glass-border); background: rgba(255,255,255,0.04); color: var(--text-secondary); letter-spacing: 0.04em; }
+  .chip--action:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: var(--text-primary); }
+  .chip--accent { border-color: rgba(10,132,255,0.3); background: rgba(10,132,255,0.12); color: #64b5ff; }
+  .chip--accent:hover:not(:disabled) { background: rgba(10,132,255,0.22); }
+  .chip--disabled { opacity: 0.45; cursor: not-allowed; }
   .warn { border-radius: 10px; padding: 8px 12px; }
   .warn--orange { background: rgba(255,159,10,0.08); border: 1px solid rgba(255,159,10,0.2); }
   .warn--red { background: rgba(255,69,58,0.08); border: 1px solid rgba(255,69,58,0.2); }
@@ -547,8 +554,8 @@
   .engage--disabled { background: rgba(255,255,255,0.05); color: var(--text-tertiary); cursor: not-allowed; box-shadow: none; }
   .hint { text-align: center; font-size: 11px; color: var(--text-tertiary); margin: -5px 0 0; }
   .mono { font-family: monospace; font-size: 10px; }
-  .kbd-hint { text-align: center; font-size: 9px; color: rgba(255,255,255,0.12); margin: -2px 0 0; letter-spacing: 0.02em; }
-  .check-updates { display: block; margin: 6px auto 0; background: none; border: none; padding: 2px 8px; font-size: 9px; font-weight: 500; color: rgba(255,255,255,0.18); cursor: pointer; font-family: var(--font-sf); letter-spacing: 0.02em; transition: color 0.15s; }
+  .kbd-hint { text-align: center; font-size: 11px; color: var(--text-tertiary); margin: -2px 0 0; letter-spacing: 0.02em; }
+  .check-updates { display: block; margin: 8px auto 0; background: none; border: none; padding: 4px 12px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.32); cursor: pointer; font-family: var(--font-sf); letter-spacing: 0.02em; transition: color 0.15s; }
   .check-updates:hover { color: var(--accent); }
   .check-updates:disabled { cursor: default; }
   :global(*) { box-sizing: border-box; }

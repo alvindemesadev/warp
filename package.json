@@ -1,6 +1,6 @@
 {
   "name": "warp",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "High-speed file transfer desktop app",
   "type": "module",
   "scripts": {

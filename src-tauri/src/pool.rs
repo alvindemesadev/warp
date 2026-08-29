@@ -207,6 +207,16 @@ impl Tracker {
                 self.maybe_emit(name, pct, now)
             }
 
+            RoboLine::Extra { size, name } => {
+                // Parallel engine never runs Sync (hard gate), but handle Extra
+                // so future callers and tests see live progress for deletes.
+                self.files_seen += 1;
+                self.transferred += 1;
+                self.note_bytes(*size, now);
+                let pct = self.current_pct();
+                self.maybe_emit(format!("Deleting {}", name), pct, now)
+            }
+
             RoboLine::Speed(bps) => {
                 if self.last_speed_str.is_empty() {
                     self.last_speed_str = fmt_speed(*bps);
@@ -379,6 +389,19 @@ pub(crate) fn consume_stream<R: BufRead>(
                 if let Some(t) = tracker {
                     let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
                     let parsed = RoboLine::FileHeader { is_same, is_error, size, name };
+                    if let Some(p) = g.ingest(&parsed, Instant::now()) {
+                        drop(g);
+                        on_progress(p);
+                    }
+                }
+            }
+            RoboLine::Extra { size, name } => {
+                local.seen += 1;
+                local.transferred += 1;
+                local.counted_bytes = local.counted_bytes.saturating_add(size);
+                if let Some(t) = tracker {
+                    let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                    let parsed = RoboLine::Extra { size, name: name.clone() };
                     if let Some(p) = g.ingest(&parsed, Instant::now()) {
                         drop(g);
                         on_progress(p);

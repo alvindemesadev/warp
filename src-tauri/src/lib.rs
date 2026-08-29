@@ -527,6 +527,7 @@ fn robocopy_exit_message(code: i32) -> Option<String> {
 
 pub(crate) enum RoboLine {
     FileHeader { is_same: bool, is_error: bool, size: u64, name: String },
+    Extra { size: u64, name: String },
     Percent(f64),
     Speed(u64),
     Skip,
@@ -611,13 +612,16 @@ pub(crate) fn parse_line(raw: &str) -> RoboLine {
     // leading tab is what keeps column 0 empty.
     //   File rows:  ["", "New File", "", "1024", "path"]   (5 columns)
     //   Dir rows:   ["", "New Dir  1", "path"]             (3 columns, skipped)
-    //   Extra rows: ["", "*EXTRA File", "", "12", "path"] (dest-only, skipped)
+    //   Extra rows: ["", "*EXTRA File", "", "12", "path"] (dest-only, used for Sync deletes)
     let cols: Vec<&str> = raw.split('\t').collect();
     if cols.len() >= 5 {
         let status = cols[1].trim();
         let path = cols[4..].join(" ").trim().to_string();
         if let Ok(size) = cols[3].trim().parse::<u64>() {
-            if !status.is_empty() && !path.is_empty() && !status.starts_with('*') {
+            if !status.is_empty() && !path.is_empty() {
+                if status.starts_with('*') {
+                    return RoboLine::Extra { size, name: basename(&path) };
+                }
                 let is_same = status.eq_ignore_ascii_case("Same");
                 let is_error = status.eq_ignore_ascii_case("ERROR");
                 return RoboLine::FileHeader { is_same, is_error, size, name: basename(&path) };
@@ -630,11 +634,13 @@ pub(crate) fn parse_line(raw: &str) -> RoboLine {
 
 // ── Scan pass ─────────────────────────────────────────────────────────────────
 
-fn scan(source: &str, destination: &str) -> (u64, u32) {
-    let out = match robocopy_cmd()
-        .args([source, destination, "/L", "/E", "/BYTES", "/NJH", "/NJS", "/NP"])
-        .output()
-    {
+fn scan(source: &str, destination: &str, mode: &str) -> (u64, u32) {
+    let is_sync = mode == "sync";
+    let mut args = vec![source.to_string(), destination.to_string(), "/L".to_string(), "/E".to_string(), "/BYTES".to_string(), "/NJH".to_string(), "/NJS".to_string(), "/NP".to_string()];
+    if is_sync {
+        args.push("/MIR".to_string());
+    }
+    let out = match robocopy_cmd().args(&args).output() {
         Ok(o) => o,
         Err(_) => return (0, 0),
     };
@@ -642,9 +648,18 @@ fn scan(source: &str, destination: &str) -> (u64, u32) {
     let mut total_bytes = 0u64;
     let mut total_files = 0u32;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let RoboLine::FileHeader { size, is_error: false, .. } = parse_line(line) {
-            total_bytes += size;
-            total_files += 1;
+        match parse_line(line) {
+            RoboLine::FileHeader { size, is_error: false, .. } => {
+                total_bytes += size;
+                total_files += 1;
+            }
+            RoboLine::Extra { size, .. } if is_sync => {
+                // For Sync, deletions are work too — count them so progress moves
+                // during the delete phase instead of sticking at 0%.
+                total_bytes = total_bytes.saturating_add(size);
+                total_files += 1;
+            }
+            _ => {}
         }
     }
     (total_bytes, total_files)
@@ -953,7 +968,7 @@ fn warp_file_op_sync(
     verify: bool,   // run a verification pass after a successful transfer
 ) -> Result<WarpSummary, String> {
     // Scan for total size (determines whether progress bar is determinate)
-    let (mut total_bytes, total_files_scan) = scan(&source, &effective_dest);
+    let (mut total_bytes, total_files_scan) = scan(&source, &effective_dest, &mode);
     let indeterminate = total_bytes == 0; // empty folder or all zero-byte files
 
     ensure_free_space(&destination, &effective_dest, total_bytes)?;
@@ -1204,6 +1219,73 @@ fn warp_file_op_sync(
                                 shards_total: 0,
                             });
                         }
+                    }
+                }
+
+                RoboLine::Extra { size, name } => {
+                    // Sync deletes (*EXTRA) — previously skipped, which left Sync
+                    // stuck at 0% when the job was mostly deletions (empty source).
+                    // Treat each delete as work: advance files/bytes and emit so
+                    // the UI stays live. For non-sync this is rare (extra files
+                    // exist but aren't deleted), but still show activity.
+                    finalize_pending(
+                        &mut bytes_done,
+                        &mut summary,
+                        &mut total_bytes,
+                        &mut pending_large,
+                    );
+                    summary.total_files += 1;
+                    files_done_count += 1;
+                    // Count toward bytes so overall_pct moves during delete phase.
+                    // For non-sync bytes are irrelevant (nothing is deleted) but
+                    // counting keeps the math consistent with scan() which added
+                    // Extra sizes for sync.
+                    bytes_done = bytes_done.saturating_add(size);
+                    if bytes_done > total_bytes && total_bytes > 0 {
+                        total_bytes = bytes_done;
+                    }
+                    summary.bytes_transferred = bytes_done;
+                    speed_window_bytes = speed_window_bytes.saturating_add(size);
+                    let window_ms = speed_window_start.elapsed().as_millis() as u64;
+                    if window_ms >= 400 {
+                        let instant_bps =
+                            (speed_window_bytes as f64 / window_ms as f64 * 1000.0) as u64;
+                        if instant_bps > 0 {
+                            last_bps = if last_bps == 0 {
+                                instant_bps
+                            } else {
+                                ((last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64)
+                            };
+                            last_speed_str = fmt_speed(last_bps);
+                        }
+                        speed_window_bytes = 0;
+                        speed_window_start = Instant::now();
+                    }
+                    let pct = if indeterminate {
+                        indeterminate_tick = (indeterminate_tick + 1) % 100;
+                        indeterminate_tick
+                    } else {
+                        overall_pct(bytes_done, total_bytes)
+                    };
+                    let should_emit = pct != last_emitted
+                        || last_emit_time.elapsed().as_millis() >= 150;
+                    if should_emit {
+                        last_emitted = pct;
+                        last_emit_time = Instant::now();
+                        let _ = window.emit("warp-progress", WarpProgress {
+                            percentage: pct,
+                            current_file: format!("Deleting {}", name),
+                            speed: last_speed_str.clone(),
+                            files_done: files_done_count,
+                            files_total: total_files_scan,
+                            indeterminate,
+                            bytes_per_sec: last_bps,
+                            bytes_done,
+                            total_bytes,
+                            active_workers: 1,
+                            shards_done: 0,
+                            shards_total: 0,
+                        });
                     }
                 }
 
@@ -1917,10 +1999,17 @@ mod tests {
 
     #[test]
     fn parse_extra_file_row_is_skipped() {
-        // Dest-only files are prefixed with '*' (locale-independent) — they
-        // must not count toward totals or verify mismatches.
+        // Dest-only files are prefixed with '*' (locale-independent).
+        // For Copy/Move they still parse as Extra but scan() only counts them
+        // for Sync (/MIR) so totals stay correct; verify still ignores them.
         let line = "\t  *EXTRA File \t\t      12\tz.txt";
-        assert!(matches!(parse_line(line), RoboLine::Skip));
+        match parse_line(line) {
+            RoboLine::Extra { size, name } => {
+                assert_eq!(size, 12);
+                assert_eq!(name, "z.txt");
+            }
+            _ => panic!("expected Extra for *EXTRA line"),
+        }
     }
 
     #[test]
@@ -2128,7 +2217,7 @@ mod real_robocopy {
         let s = src.to_string_lossy().to_string();
         let d = dst.to_string_lossy().to_string();
 
-        let (bytes, files) = scan(&s, &d);
+        let (bytes, files) = scan(&s, &d, "copy");
         assert_eq!(files, 3, "a.txt + b.txt + sub/c.txt; the empty dir is not a file");
         assert!(bytes > 0);
 
@@ -2374,7 +2463,7 @@ mod real_robocopy {
         let src_files = count_files(fx.root.as_path());
 
         // Warm metadata cache once so both runs see the same conditions.
-        let _ = scan(&src, &src);
+        let _ = scan(&src, &src, "copy");
 
         let dst_seq_p = tmp.join(format!("warp_perf_dst_seq_{}", std::process::id()));
         let dst_par_p = tmp.join(format!("warp_perf_dst_par_{}", std::process::id()));

@@ -370,7 +370,7 @@
       showToast("Update download failed — check your connection and try again");
     }
   }
-  let APP_VERSION = $state("1.2.3");
+  let APP_VERSION = $state("1.2.4");
   const MODES: { id: Mode; label: string; desc: string; warning?: string }[] = [
     { id: "copy", label: "Copy", desc: "Duplicate files to destination" },
     { id: "move", label: "Move", desc: "Transfer and remove from source" },

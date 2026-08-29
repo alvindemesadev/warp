@@ -15,7 +15,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 [![Version](https://img.shields.io/badge/Version-1.2.2-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-30d158.svg)](#license)
 
-<video src="https://github.com/alvindemesadev/warp/releases/download/v1.2.2/WarpDemo.mp4" width="640" controls></video>
+<a href="https://github.com/alvindemesadev/warp/releases/download/v1.2.2/WarpDemo.mp4"><img src="docs/screenshot.png" alt="Watch demo - click to play" width="640" /></a>
 
 </div>
 

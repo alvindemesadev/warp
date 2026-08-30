@@ -18,14 +18,16 @@
     position: fixed;
     inset: 0;
     z-index: -10;
-    background: #000;
+    background: var(--surface-0);
+    transition: background 0.25s ease;
   }
   .bg-noise {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
-    opacity: 0.025;
+    opacity: var(--noise-opacity, 0.025);
+    pointer-events: none;
   }
   .bg-glow {
     position: absolute;
@@ -34,9 +36,10 @@
     transform: translateX(-50%);
     width: 500px;
     height: 280px;
-    background: radial-gradient(ellipse, rgba(10, 132, 255, 0.15) 0%, transparent 70%);
+    background: var(--glow-bg);
     border-radius: 50%;
-    filter: blur(1px);
+    filter: blur(2px);
     pointer-events: none;
+    transition: background 0.25s ease;
   }
 </style>

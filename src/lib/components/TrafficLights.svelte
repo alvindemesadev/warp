@@ -162,27 +162,26 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--seg-bg);
     color: var(--text-secondary);
     transition: all 0.15s;
   }
   .chip--update {
-    background: rgba(10, 132, 255, 0.14);
-    color: #64b5ff;
-    border-color: rgba(10, 132, 255, 0.22);
+    background: rgba(10, 132, 255, 0.15);
+    color: var(--accent);
+    border-color: rgba(10, 132, 255, 0.3);
     font-weight: 700;
     animation: update-pulse 2.2s ease-in-out infinite;
   }
   .chip--update:hover {
-    background: rgba(10, 132, 255, 0.22);
-    color: #7cc4ff;
+    background: rgba(10, 132, 255, 0.25);
   }
   .chip--recent {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--seg-bg);
     color: var(--text-secondary);
   }
   .chip--recent:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--seg-hover);
     color: var(--text-primary);
   }
 </style>

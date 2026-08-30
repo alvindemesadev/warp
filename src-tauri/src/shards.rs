@@ -41,11 +41,12 @@ pub struct Shard {
     pub chunk_files: Option<Vec<String>>,
 }
 
-/// Split `source` into shards targeting `effective_dest`. Returns an empty vec
-/// when the source has nothing to copy (caller falls back to the sequential
-/// path, which handles the empty/indeterminate case).
-pub fn partition(source: &str, effective_dest: &str) -> Vec<Shard> {
-    let (total_bytes, _total_files) = crate::dir_stats(source);
+/// Split `source` into shards targeting `effective_dest` with precalculated `total_bytes`.
+pub fn partition_with_total_bytes(
+    source: &str,
+    effective_dest: &str,
+    total_bytes: u64,
+) -> Vec<Shard> {
     if total_bytes == 0 && !has_any_entry(source) {
         return vec![];
     }
@@ -58,60 +59,89 @@ pub fn partition(source: &str, effective_dest: &str) -> Vec<Shard> {
     shards
 }
 
+/// Split `source` into shards targeting `effective_dest`. Returns an empty vec
+/// when the source has nothing to copy (caller falls back to the sequential
+/// path, which handles the empty/indeterminate case).
+pub fn partition(source: &str, effective_dest: &str) -> Vec<Shard> {
+    let (total_bytes, _total_files) = crate::dir_stats(source);
+    partition_with_total_bytes(source, effective_dest, total_bytes)
+}
+
 /// Balanced variant: Plan A (byte-balanced order) + conditional Plan B (split flat monster).
 /// `workers` is the `resolve_workers_for` result (>=1). Returns same shards as `partition`
 /// sorted largest-first, and if `max_shard > 1.5 * avg` and that shard is flat, splits it
 /// into file-chunk shards. See `docs/specs/004-balanced-sharding.md`.
+#[allow(dead_code)]
 pub fn partition_balanced(source: &str, effective_dest: &str, workers: usize) -> Vec<Shard> {
-    let mut shards = partition(source, effective_dest);
+    let shards = partition(source, effective_dest);
+    partition_balanced_from_shards(shards, workers)
+}
+
+/// Balanced variant reusing precalculated `total_bytes` to avoid double-walking `source`.
+pub fn partition_balanced_with_stats(
+    source: &str,
+    effective_dest: &str,
+    workers: usize,
+    total_bytes: u64,
+) -> Vec<Shard> {
+    let shards = partition_with_total_bytes(source, effective_dest, total_bytes);
+    partition_balanced_from_shards(shards, workers)
+}
+
+fn partition_balanced_from_shards(mut shards: Vec<Shard>, workers: usize) -> Vec<Shard> {
     if shards.is_empty() || workers <= 1 {
         return shards;
     }
     // Plan A: cost-balanced — largest cost first so queue's straggler starts early
-    shards.sort_by(|a, b| shard_cost(b).cmp(&shard_cost(a)));
+    shards.sort_by_key(|b| std::cmp::Reverse(shard_cost(b)));
 
-    // Single-shard with many subdirs (e.g., outer Demo/source containing inner source with app/bootstrap/...)
-    // Expand into per-child shards so it can go parallel even without dominant size.
+    // Single-shard with many subdirs
     if shards.len() == 1 {
         let solo = shards[0].clone();
         let listing = list_children(&solo.src);
         if listing.dirs.len() >= 2 {
-            let mut new_shards = Vec::new();
-            if !listing.files.is_empty() {
-                let bytes = listing.files.iter().map(|f| f.size).sum();
-                new_shards.push(Shard {
-                    id: 0,
-                    src: solo.src.clone(),
-                    dst: solo.dst.clone(),
-                    est_bytes: bytes,
-                    est_files: listing.files.len() as u64,
-                    root_only: true,
-                    chunk_files: None,
-                });
+            let total_files: u64 = shards.iter().map(|s| s.est_files).sum();
+            let total_bytes: u64 = shards.iter().map(|s| s.est_bytes).sum();
+            let avg_file = total_bytes.checked_div(total_files).unwrap_or(0);
+            // Only expand if avg file is not tiny — otherwise sequential is faster for 42k×10KB case
+            if avg_file >= 32 * 1024 || total_bytes >= 1024 * 1024 * 1024 {
+                let mut new_shards = Vec::new();
+                if !listing.files.is_empty() {
+                    let bytes = listing.files.iter().map(|f| f.size).sum();
+                    new_shards.push(Shard {
+                        id: 0,
+                        src: solo.src.clone(),
+                        dst: solo.dst.clone(),
+                        est_bytes: bytes,
+                        est_files: listing.files.len() as u64,
+                        root_only: true,
+                        chunk_files: None,
+                    });
+                }
+                for child in &listing.dirs {
+                    let (bytes, files) = crate::dir_stats(&child.path);
+                    let child_dst = join_win(&solo.dst, &child.name);
+                    new_shards.push(Shard {
+                        id: 0,
+                        src: child.path.clone(),
+                        dst: child_dst,
+                        est_bytes: bytes,
+                        est_files: files,
+                        root_only: false,
+                        chunk_files: None,
+                    });
+                }
+                new_shards.sort_by_key(|b| std::cmp::Reverse(shard_cost(b)));
+                for (i, s) in new_shards.iter_mut().enumerate() {
+                    s.id = (i + 1) as u64;
+                }
+                return new_shards;
             }
-            for child in &listing.dirs {
-                let (bytes, files) = crate::dir_stats(&child.path);
-                let child_dst = join_win(&solo.dst, &child.name);
-                new_shards.push(Shard {
-                    id: 0,
-                    src: child.path.clone(),
-                    dst: child_dst,
-                    est_bytes: bytes,
-                    est_files: files,
-                    root_only: false,
-                    chunk_files: None,
-                });
-            }
-            new_shards.sort_by(|a, b| shard_cost(b).cmp(&shard_cost(a)));
-            for (i, s) in new_shards.iter_mut().enumerate() {
-                s.id = (i + 1) as u64;
-            }
-            return new_shards;
         }
     }
 
     // For both single-flat and multi-shard, check if max bucket dominates avg by COST
-    let total_cost: u64 = shards.iter().map(|s| shard_cost(s)).sum();
+    let total_cost: u64 = shards.iter().map(shard_cost).sum();
     if total_cost == 0 {
         return shards;
     }
@@ -119,26 +149,33 @@ pub fn partition_balanced(source: &str, effective_dest: &str, workers: usize) ->
     if avg_cost == 0 {
         return shards;
     }
-    let max_cost = shards.iter().map(|s| shard_cost(s)).max().unwrap_or(0);
+    let max_cost = shards.iter().map(shard_cost).max().unwrap_or(0);
     if max_cost <= avg_cost * 3 / 2 {
         return shards;
     }
     let idx = shards.iter().position(|s| shard_cost(s) == max_cost).unwrap();
     let shard = shards[idx].clone();
     // Only flat dirs (no subdirs) with at least 2 files are candidates for file-chunk split
+    // For many tiny files (avg <32KB) single robocopy is faster than chunked
     let listing = list_children(&shard.src);
     if !listing.dirs.is_empty() || listing.files.len() < 2 {
         return shards;
     }
+    let shard_bytes: u64 = listing.files.iter().map(|f| f.size).sum();
+    let shard_files = listing.files.len() as u64;
+    let avg_file = shard_bytes.checked_div(shard_files).unwrap_or(0);
+    if avg_file < 32 * 1024 && shard_bytes < 512 * 1024 * 1024 {
+        return shards;
+    }
     // k = ceil(max_cost / avg_cost), clamped 2..6 and <= file count
-    let mut k = ((max_cost + avg_cost - 1) / avg_cost) as usize;
+    let mut k = max_cost.div_ceil(avg_cost) as usize;
     k = k.clamp(2, 6).min(listing.files.len());
     if k < 2 {
         return shards;
     }
     // Bin-pack files descending by COST into k buckets (not just bytes)
     let mut files = listing.files;
-    files.sort_by(|a, b| file_cost(b).cmp(&file_cost(a)));
+    files.sort_by_key(|b| std::cmp::Reverse(file_cost(b)));
     let mut buckets: Vec<Vec<FileEntry>> = vec![Vec::new(); k];
     let mut bucket_costs = vec![0u64; k];
     for f in files {
@@ -170,7 +207,7 @@ pub fn partition_balanced(source: &str, effective_dest: &str, workers: usize) ->
     }
     shards.remove(idx);
     shards.extend(new_shards);
-    shards.sort_by(|a, b| shard_cost(b).cmp(&shard_cost(a)));
+    shards.sort_by_key(|b| std::cmp::Reverse(shard_cost(b)));
     for (i, s) in shards.iter_mut().enumerate() {
         s.id = (i + 1) as u64;
     }
@@ -242,8 +279,6 @@ struct Entry {
 #[derive(Clone)]
 struct FileEntry {
     name: String,
-    #[allow(dead_code)]
-    path: String,
     size: u64,
 }
 
@@ -252,6 +287,81 @@ struct ChildrenList {
     files: Vec<FileEntry>,
 }
 
+#[cfg(windows)]
+fn list_children(dir: &str) -> ChildrenList {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FIND_FIRST_EX_LARGE_FETCH,
+        WIN32_FIND_DATAW,
+    };
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    let long = crate::to_long_path(dir).replace('/', "\\");
+    let long_clean = long.trim_end_matches('\\');
+    let pattern = format!("{long_clean}\\*");
+    let pattern_utf16: Vec<u16> = pattern.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut find_data = WIN32_FIND_DATAW::default();
+
+    let handle = unsafe {
+        FindFirstFileExW(
+            PCWSTR(pattern_utf16.as_ptr()),
+            FindExInfoBasic,
+            &mut find_data as *mut _ as *mut _,
+            FindExSearchNameMatch,
+            None,
+            FIND_FIRST_EX_LARGE_FETCH,
+        )
+    };
+
+    let handle = match handle {
+        Ok(h) if !h.is_invalid() => h,
+        _ => return ChildrenList { dirs, files },
+    };
+
+    let dir_clean = dir.trim_end_matches(['\\', '/']);
+    loop {
+        let len =
+            find_data.cFileName.iter().position(|&c| c == 0).unwrap_or(find_data.cFileName.len());
+        let name_slice = &find_data.cFileName[..len];
+
+        let is_dot = len == 1 && name_slice[0] == 0x2E;
+        let is_dotdot = len == 2 && name_slice[0] == 0x2E && name_slice[1] == 0x2E;
+
+        if !is_dot && !is_dotdot {
+            let attrs = find_data.dwFileAttributes;
+            let is_reparse = (attrs & FILE_ATTRIBUTE_REPARSE_POINT.0) != 0;
+
+            if !is_reparse {
+                let is_dir = (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0;
+                let name_os = OsString::from_wide(name_slice);
+                let name = name_os.to_string_lossy().to_string();
+                if is_dir {
+                    let sub_path = format!("{dir_clean}\\{name}");
+                    dirs.push(Entry { name, path: sub_path });
+                } else {
+                    let size =
+                        ((find_data.nFileSizeHigh as u64) << 32) | (find_data.nFileSizeLow as u64);
+                    files.push(FileEntry { name, size });
+                }
+            }
+        }
+
+        if unsafe { FindNextFileW(handle, &mut find_data).is_err() } {
+            break;
+        }
+    }
+
+    let _ = unsafe { FindClose(handle) };
+    dirs.sort_by(|a, b| a.name.cmp(&b.name));
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    ChildrenList { dirs, files }
+}
+
+#[cfg(not(windows))]
 fn list_children(dir: &str) -> ChildrenList {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
@@ -263,13 +373,14 @@ fn list_children(dir: &str) -> ChildrenList {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let path = entry.path().to_string_lossy().to_string();
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
+            if ft.is_dir() {
+                let path = entry.path().to_string_lossy().to_string();
                 dirs.push(Entry { name, path });
-            } else if meta.is_file() {
-                let size = meta.len();
-                files.push(FileEntry { name, path, size });
+            } else if ft.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    let size = meta.len();
+                    files.push(FileEntry { name, size });
+                }
             }
         }
     }

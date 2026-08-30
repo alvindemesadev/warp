@@ -296,7 +296,7 @@
     line-height: 1.5;
   }
   .paths {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--surface-2);
     border: 1px solid var(--glass-border);
     border-radius: 12px;
     padding: 11px 14px;

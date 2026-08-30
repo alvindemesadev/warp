@@ -196,8 +196,8 @@
     font-variant-numeric: tabular-nums;
   }
   .bar {
-    height: 3px;
-    background: rgba(255, 255, 255, 0.06);
+    height: 4px;
+    background: var(--surface-3);
     border-radius: 100px;
     overflow: hidden;
   }
@@ -230,15 +230,15 @@
     letter-spacing: 0.04em;
     padding: 2px 7px;
     border-radius: 5px;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--seg-bg);
     color: var(--text-tertiary);
   }
   .pool-chip--workers {
-    background: rgba(10, 132, 255, 0.14);
+    background: rgba(10, 132, 255, 0.15);
     color: var(--accent);
   }
   .pool-chip--paused {
-    background: rgba(255, 214, 10, 0.12);
+    background: rgba(255, 214, 10, 0.15);
     color: var(--yellow);
   }
   .meta {
@@ -266,7 +266,7 @@
     font-weight: 700;
     color: var(--red);
     background: rgba(255, 69, 58, 0.1);
-    border: 1px solid rgba(255, 69, 58, 0.2);
+    border: 1px solid rgba(255, 69, 58, 0.25);
     border-radius: 5px;
     padding: 2px 7px;
     cursor: pointer;
@@ -280,8 +280,8 @@
     font-size: 9px;
     font-weight: 700;
     color: var(--yellow);
-    background: rgba(255, 214, 10, 0.08);
-    border: 1px solid rgba(255, 214, 10, 0.22);
+    background: rgba(255, 214, 10, 0.1);
+    border: 1px solid rgba(255, 214, 10, 0.25);
     border-radius: 5px;
     padding: 2px 7px;
     cursor: pointer;
@@ -289,7 +289,7 @@
     font-family: var(--font-sf);
   }
   .pausebtn:hover {
-    background: rgba(255, 214, 10, 0.18);
+    background: rgba(255, 214, 10, 0.2);
   }
   .live {
     border-top: 1px solid var(--glass-border);
@@ -300,17 +300,16 @@
   .live-title {
     font-size: 10px;
     font-weight: 700;
-    color: #ffffff;
+    color: var(--text-tertiary);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     margin: 0 0 8px;
-    opacity: 1;
   }
   .live-list {
     display: block;
     padding: 6px;
-    background: #1a1a1e;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--live-box-bg);
+    border: 1px solid var(--live-box-border);
     border-radius: 10px;
     overflow: hidden;
   }
@@ -319,27 +318,29 @@
     font-size: 12px;
     font-family: Consolas, monospace;
     font-weight: 500;
-    color: #ffffff;
+    color: var(--live-file-color);
     margin: 0;
     padding: 4px 8px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     line-height: 1.4;
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--live-file-bg);
+    border: 1px solid var(--glass-border);
     border-radius: 6px;
     margin-bottom: 4px;
+    transition: background 0.1s;
   }
   .live-file:last-child {
     margin-bottom: 0;
   }
   .live-file--new {
-    color: #ffffff;
-    background: rgba(10, 132, 255, 0.18);
-    border: 1px solid rgba(10, 132, 255, 0.3);
+    color: var(--accent);
+    background: rgba(10, 132, 255, 0.12);
+    border: 1px solid rgba(10, 132, 255, 0.25);
     font-weight: 700;
   }
   .live-file:hover {
-    background: rgba(255, 255, 255, 0.11);
+    background: var(--live-file-hover);
   }
 </style>

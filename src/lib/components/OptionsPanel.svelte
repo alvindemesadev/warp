@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Conflict, FolderMode } from "$lib/types";
   import { WORKER_OPTIONS, normalizeThrottleInput } from "$lib/transfer";
+  import { ui } from "$lib/stores/ui.svelte";
   let {
     folderMode = $bindable("into"),
     conflict = $bindable("overwrite"),
@@ -148,12 +149,7 @@
     <div class="right-stack">
       <div class="opt-group">
         <span class="opt-label">Workers</span>
-        <div
-          class="seg"
-          role="group"
-          aria-label="Parallel workers"
-          class:seg--disabled={false}
-        >
+        <div class="seg" role="group" aria-label="Parallel workers" class:seg--disabled={false}>
           {#each WORKER_OPTIONS as opt}
             {@const isUsb =
               hasPaths &&
@@ -210,6 +206,30 @@
       </div>
     </div>
   </div>
+  <div class="opts-row">
+    <div class="opt-group">
+      <span class="opt-label">Theme</span>
+      <div class="seg" role="group" aria-label="Theme">
+        {#each [{ id: "dark" as const, label: "Dark" }, { id: "light" as const, label: "Light" }] as t}
+          <button class="seg-btn" class:on={ui.theme === t.id} onclick={() => ui.setTheme(t.id)}
+            >{t.label}</button
+          >
+        {/each}
+      </div>
+    </div>
+    <div class="opt-group">
+      <span class="opt-label">Size</span>
+      <div class="seg" role="group" aria-label="UI Scale">
+        {#each [{ v: 1.0, label: "Normal" }, { v: 1.15, label: "Medium" }, { v: 1.3, label: "Large" }] as s}
+          <button
+            class="seg-btn"
+            class:on={Math.abs(ui.scale - s.v) < 0.04}
+            onclick={() => ui.setScale(s.v)}>{s.label}</button
+          >
+        {/each}
+      </div>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -227,7 +247,7 @@
     align-items: flex-start;
   }
   .opts-secondary {
-    opacity: 0.92;
+    opacity: 0.95;
   }
   .opt-group {
     display: flex;
@@ -248,11 +268,12 @@
     align-items: center;
     gap: 2px;
     padding: 3px;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--seg-bg);
     border: 1px solid var(--glass-border);
     border-radius: 9px;
     min-width: 0;
     flex-wrap: nowrap;
+    transition: background 0.2s, border-color 0.2s;
   }
   .seg-btn {
     padding: 4px 11px;
@@ -265,46 +286,47 @@
     cursor: pointer;
     transition:
       background 0.15s,
-      color 0.15s;
+      color 0.15s,
+      box-shadow 0.15s;
     font-family: var(--font-sf);
     white-space: nowrap;
     flex-shrink: 0;
   }
   .seg-btn:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--seg-hover);
     color: var(--text-primary);
   }
   .seg-btn.on {
-    background: rgba(255, 255, 255, 0.16);
+    background: var(--seg-active-bg);
     color: var(--text-primary);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--seg-active-shadow);
   }
   .seg-btn.on-green {
     background: rgba(48, 209, 88, 0.2);
     color: var(--green);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--seg-active-shadow);
   }
   .seg-btn.on-blue {
     background: rgba(10, 132, 255, 0.2);
     color: var(--accent);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--seg-active-shadow);
   }
   .seg-btn.on-yellow {
     background: rgba(255, 214, 10, 0.2);
     color: var(--yellow);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--seg-active-shadow);
   }
   .seg-btn.on-orange {
     background: rgba(255, 159, 10, 0.2);
     color: var(--orange);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--seg-active-shadow);
   }
   .seg-input {
     width: 56px;
     padding: 4px 6px;
     border-radius: 6px;
     border: 1px solid var(--glass-border);
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--input-bg);
     color: var(--text-primary);
     font-size: 11px;
     font-family: var(--font-sf);
@@ -312,7 +334,8 @@
     text-align: center;
     transition:
       opacity 0.12s,
-      width 0.12s;
+      width 0.12s,
+      background 0.2s;
   }
   .seg-input--hidden {
     width: 0;

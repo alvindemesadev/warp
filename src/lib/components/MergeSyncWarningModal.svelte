@@ -7,7 +7,13 @@
   }: { destPath: string; onCancel: () => void; onConfirm: () => void } = $props();
 </script>
 
-<div class="overlay" role="dialog" aria-modal="true" aria-label="Dangerous combination" tabindex="-1">
+<div
+  class="overlay"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Dangerous combination"
+  tabindex="-1"
+>
   <button type="button" aria-label="Dismiss" onclick={onCancel} class="overlay-backdrop"></button>
   <div class="modal">
     <div class="modal-head">
@@ -29,8 +35,10 @@
       </div>
     </div>
     <p class="modal-body">
-      Sync + Merge Contents will mirror the source directly into the destination root. Files already in
-      <strong class="strong">{basename(destPath) || "destination"}</strong> that are not in the source will be
+      Sync + Merge Contents will mirror the source directly into the destination root. Files already
+      in
+      <strong class="strong">{basename(destPath) || "destination"}</strong> that are not in the
+      source will be
       <strong class="strong strong--red">permanently deleted</strong>.
     </p>
     <div class="modal-actions">
@@ -56,13 +64,15 @@
     border: none;
     padding: 0;
     margin: 0;
-    background: rgba(0, 0, 0, 0.65);
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(6px);
     cursor: default;
   }
   .modal {
     position: relative;
-    background: #1c1c1e;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--modal-bg);
+    border: 1px solid var(--modal-border);
+    box-shadow: var(--modal-shadow);
     border-radius: 18px;
     padding: 24px;
     max-width: 340px;
@@ -120,14 +130,15 @@
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
+    transition: background 0.15s;
   }
   .btn--ghost {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: transparent;
-    color: var(--text-secondary);
+    border: 1px solid var(--glass-border);
+    background: var(--surface-2);
+    color: var(--text-primary);
   }
   .btn--ghost:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--glass-hover);
   }
   .btn--danger {
     border: none;

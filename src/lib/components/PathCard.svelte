@@ -74,19 +74,19 @@
         {#if sourcePath && !sourceInfo?.isFile}
           <path
             d="M2 6.5A2.5 2.5 0 014.5 4H8l1.5 2h6A2.5 2.5 0 0118 8.5v5A2.5 2.5 0 0115.5 16h-11A2.5 2.5 0 012 13.5V6.5Z"
-            fill="#0a84ff"
+            fill="var(--accent)"
           />
         {:else if sourcePath && sourceInfo?.isFile}
           <path
             d="M5 3h7l4 4v10a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"
-            stroke="#ff453a"
+            stroke="var(--red)"
             stroke-width="1.4"
             fill="none"
           />
         {:else}
           <path
             d="M2 6.5A2.5 2.5 0 014.5 4H8l1.5 2h6A2.5 2.5 0 0118 8.5v5A2.5 2.5 0 0115.5 16h-11A2.5 2.5 0 012 13.5V6.5Z"
-            stroke="rgba(255,255,255,0.2)"
+            stroke="var(--text-tertiary)"
             stroke-width="1.4"
             fill="none"
           />
@@ -101,13 +101,13 @@
         </p>
         <p class="meta">
           {#if isScanning}<span class="pulse">Scanning…</span>
-           {:else if sourceInfo?.isFile}<span class="error">Drop a folder, not a file</span>
-           {:else if sourceInfo}{fmtFiles(sourceInfo.files)} · {fmtBytes(sourceInfo.bytes)}
-           {:else}<span class="warn">⚠ Folder not found or unreadable</span>{/if}
-         </p>
-         {#if sourceWarning}<p class="hint hint--warn">⚠ {sourceWarning}</p>{/if}
-         {#if sourceUsb}<p class="hint hint--warn">
-             ⚠ USB drive — reduced threads for optimal throughput
+          {:else if sourceInfo?.isFile}<span class="error">Drop a folder, not a file</span>
+          {:else if sourceInfo}{fmtFiles(sourceInfo.files)} · {fmtBytes(sourceInfo.bytes)}
+          {:else}<span class="warn">⚠ Folder not found or unreadable</span>{/if}
+        </p>
+        {#if sourceWarning}<p class="hint hint--warn">⚠ {sourceWarning}</p>{/if}
+        {#if sourceUsb}<p class="hint hint--warn">
+            ⚠ USB drive — reduced threads for optimal throughput
           </p>{/if}
       {:else}
         <p class="placeholder">Drop or <span class="link">browse</span></p>
@@ -124,7 +124,7 @@
         ><svg width="9" height="9" viewBox="0 0 8 8" fill="none"
           ><path
             d="M1 1l6 6M7 1L1 7"
-            stroke="white"
+            stroke="currentColor"
             stroke-width="1.6"
             stroke-linecap="round"
           /></svg
@@ -145,7 +145,7 @@
       <svg width="10" height="10" viewBox="0 0 10 10" fill="none"
         ><path
           d="M3 1.5v7M1.5 7L3 8.5 4.5 7M7 8.5v-7M5.5 3L7 1.5 8.5 3"
-          stroke="rgba(255,255,255,0.35)"
+          stroke="var(--text-secondary)"
           stroke-width="1.2"
           stroke-linecap="round"
           stroke-linejoin="round"
@@ -181,19 +181,19 @@
         {#if destPath && destInfo?.isFile}
           <path
             d="M5 3h7l4 4v10a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"
-            stroke="#ff453a"
+            stroke="var(--red)"
             stroke-width="1.4"
             fill="none"
           />
         {:else if destPath}
           <path
             d="M2 6.5A2.5 2.5 0 014.5 4H8l1.5 2h6A2.5 2.5 0 0118 8.5v5A2.5 2.5 0 0115.5 16h-11A2.5 2.5 0 012 13.5V6.5Z"
-            fill="#30d158"
+            fill="var(--green)"
           />
         {:else}
           <path
             d="M2 6.5A2.5 2.5 0 014.5 4H8l1.5 2h6A2.5 2.5 0 0118 8.5v5A2.5 2.5 0 0115.5 16h-11A2.5 2.5 0 012 13.5V6.5Z"
-            stroke="rgba(255,255,255,0.2)"
+            stroke="var(--text-tertiary)"
             stroke-width="1.4"
             fill="none"
           />
@@ -208,16 +208,16 @@
         </p>
         <p class="meta">
           {#if isScanningDest}<span class="pulse">Scanning…</span>
-           {:else if destInfo?.isFile}<span class="error">Drop a folder, not a file</span>
-           {:else if destInfo && destInfo.files > 0}{fmtFiles(destInfo.files)} · {fmtBytes(
-               destInfo.bytes,
-             )} already here
-           {:else if destInfo}Empty folder
-           {:else}<span class="warn">⚠ Folder not found or unreadable</span>{/if}
-         </p>
-         {#if destWarning}<p class="hint hint--warn">⚠ {destWarning}</p>{/if}
-         {#if destUsb}<p class="hint hint--warn">
-             ⚠ USB drive — reduced threads for optimal throughput
+          {:else if destInfo?.isFile}<span class="error">Drop a folder, not a file</span>
+          {:else if destInfo && destInfo.files > 0}{fmtFiles(destInfo.files)} · {fmtBytes(
+              destInfo.bytes,
+            )} already here
+          {:else if destInfo}Empty folder
+          {:else}<span class="warn">⚠ Folder not found or unreadable</span>{/if}
+        </p>
+        {#if destWarning}<p class="hint hint--warn">⚠ {destWarning}</p>{/if}
+        {#if destUsb}<p class="hint hint--warn">
+            ⚠ USB drive — reduced threads for optimal throughput
           </p>{/if}
       {:else}
         <p class="placeholder">Drop or <span class="link">browse</span></p>
@@ -234,7 +234,7 @@
         ><svg width="9" height="9" viewBox="0 0 8 8" fill="none"
           ><path
             d="M1 1l6 6M7 1L1 7"
-            stroke="white"
+            stroke="currentColor"
             stroke-width="1.6"
             stroke-linecap="round"
           /></svg
@@ -252,10 +252,11 @@
     border-radius: 16px;
     overflow: visible;
     position: relative;
-    transition: border-color 0.15s;
+    box-shadow: var(--card-shadow);
+    transition: border-color 0.15s, background 0.2s, box-shadow 0.2s;
   }
   .card--drag-active {
-    border-color: rgba(10, 132, 255, 0.5);
+    border-color: var(--accent);
   }
   .card-hint {
     position: absolute;
@@ -303,10 +304,10 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--seg-bg);
   }
   .icon--source {
-    background: rgba(10, 132, 255, 0.18);
+    background: rgba(10, 132, 255, 0.15);
   }
   .icon--dest {
     background: rgba(48, 209, 88, 0.15);
@@ -380,7 +381,8 @@
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--seg-bg);
+    color: var(--text-secondary);
     border: none;
     padding: 0;
     display: flex;
@@ -388,13 +390,14 @@
     justify-content: center;
     flex-shrink: 0;
     cursor: pointer;
-    opacity: 0.6;
+    opacity: 0.7;
     transition:
       opacity 0.15s,
       background 0.15s;
   }
   .clear:hover {
     opacity: 1;
+    background: var(--glass-hover);
   }
   .swap-wrap {
     height: 0;
@@ -409,8 +412,9 @@
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    background: #111;
+    background: var(--swap-bg);
     border: 1px solid var(--glass-border);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -423,7 +427,7 @@
     cursor: pointer;
   }
   .swap--enabled:hover {
-    background: #222;
-    border-color: rgba(255, 255, 255, 0.2);
+    background: var(--swap-hover);
+    border-color: var(--accent);
   }
 </style>

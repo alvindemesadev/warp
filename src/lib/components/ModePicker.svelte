@@ -33,12 +33,13 @@
 
 <style>
   .mode-picker {
-    background: var(--surface-2);
+    background: var(--seg-bg);
     border: 1px solid var(--glass-border);
     border-radius: 12px;
     padding: 4px;
     display: flex;
     gap: 3px;
+    transition: background 0.2s, border-color 0.2s;
   }
   .mode-btn {
     flex: 1;
@@ -54,16 +55,17 @@
       box-shadow 0.15s;
     outline: none;
     background: transparent;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     transform: none;
   }
   .mode-btn--active {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--seg-active-bg);
     color: var(--text-primary);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--seg-active-shadow);
   }
   .mode-btn:not(.mode-btn--active):hover {
-    color: var(--text-secondary);
+    background: var(--seg-hover);
+    color: var(--text-primary);
   }
   .mode-desc {
     text-align: center;
@@ -71,5 +73,8 @@
     margin: -6px 0 0;
     color: var(--text-tertiary);
     min-height: 14px;
+  }
+  .mode-desc--warn {
+    color: var(--orange);
   }
 </style>

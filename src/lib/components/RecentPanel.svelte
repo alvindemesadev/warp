@@ -53,7 +53,8 @@
     border: none;
     padding: 0;
     margin: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(4px);
     cursor: default;
   }
   .panel {
@@ -61,14 +62,15 @@
     top: 50px;
     right: 14px;
     width: 300px;
-    background: #1c1c1e;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--modal-bg);
+    border: 1px solid var(--modal-border);
+    box-shadow: var(--modal-shadow);
     border-radius: 14px;
     overflow: hidden;
   }
   .head {
     padding: 12px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    border-bottom: 1px solid var(--glass-border);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -95,14 +97,15 @@
     text-align: left;
     background: transparent;
     border: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--glass-border);
     cursor: pointer;
     display: flex;
     flex-direction: column;
     gap: 2px;
+    transition: background 0.1s;
   }
   .row:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--glass-hover);
   }
   .row-top {
     display: flex;

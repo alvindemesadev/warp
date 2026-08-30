@@ -32,29 +32,29 @@ Calibrate `FILE_OVERHEAD` via `cargo bench` `benches/scan.rs:3204`: compare `1×
 
 Trigger: after Plan A, compute `avg_cost = total_cost / W`, `max_cost = max(bucket_cost)`. If `max_cost > 1.5 × avg_cost`:
 
-*Identify victim bucket/shard:* the `max` shard.
+_Identify victim bucket/shard:_ the `max` shard.
 
-* If victim is flat (`listing.dirs.is_empty()` && `files.len()>=2`): `k = ceil(max_cost / avg_cost)` clamp `2..6` and `≤ files.len()`. Bin-pack its files descending by `file_cost` into `k` buckets (same greedy). Replace victim with `k` `Shard{ chunk_files: Some(names), est_bytes, est_files }` `shards.rs:147`.
+- If victim is flat (`listing.dirs.is_empty()` && `files.len()>=2`): `k = ceil(max_cost / avg_cost)` clamp `2..6` and `≤ files.len()`. Bin-pack its files descending by `file_cost` into `k` buckets (same greedy). Replace victim with `k` `Shard{ chunk_files: Some(names), est_bytes, est_files }` `shards.rs:147`.
 
-* If victim has subdirs (e.g., `node_modules` with many subdirs, not flat): first expand single-shard outer case `shards.len()==1 && dirs.len()>=2` into per-child shards (already in `partition_balanced:64`), then re-evaluate cost. If still `max_cost >1.5×avg`, file-chunk the largest flat child.
+- If victim has subdirs (e.g., `node_modules` with many subdirs, not flat): first expand single-shard outer case `shards.len()==1 && dirs.len()>=2` into per-child shards (already in `partition_balanced:64`), then re-evaluate cost. If still `max_cost >1.5×avg`, file-chunk the largest flat child.
 
-* Single file `400 MB / 1 file` → `cost≈400M`, `k` would be `7` but `files.len()=1` → clamp to `1` → no split (correct — needs future chunked-file copy).
+- Single file `400 MB / 1 file` → `cost≈400M`, `k` would be `7` but `files.len()=1` → clamp to `1` → no split (correct — needs future chunked-file copy).
 
 ### Execution
 
-* `Shard.chunk_files` already exists `shards.rs:29` + `run_file_chunk_shard` `lib.rs:1907` (direct `std::fs::copy` per file, respects `skip_conflict`, `pause/cancel`, `Tracker` ingest `size`). No change.
-* `Tracker` progress still by `bytes` (user-visible), cost only for **scheduling**.
-* Long paths `to_long_path`, symlinks `/XJ`, filter `matches_filter` respected.
+- `Shard.chunk_files` already exists `shards.rs:29` + `run_file_chunk_shard` `lib.rs:1907` (direct `std::fs::copy` per file, respects `skip_conflict`, `pause/cancel`, `Tracker` ingest `size`). No change.
+- `Tracker` progress still by `bytes` (user-visible), cost only for **scheduling**.
+- Long paths `to_long_path`, symlinks `/XJ`, filter `matches_filter` respected.
 
 ## Speed Expectation
 
-* `1×100 MB` vs `1000×100 KB`: cost predicts `~3×` wall → balanced buckets put `1000` small files across `3` workers vs `1`, wall drops `~3×`.
-* `Demo/source` `20` shards, `W=8`: before `18/20 → 2 workers @37%` (tail 63% bytes in 2 shards). After: buckets `~53 MB cost` each → `8` stays busy past `70%`, tail `2` only at `~90%`.
+- `1×100 MB` vs `1000×100 KB`: cost predicts `~3×` wall → balanced buckets put `1000` small files across `3` workers vs `1`, wall drops `~3×`.
+- `Demo/source` `20` shards, `W=8`: before `18/20 → 2 workers @37%` (tail 63% bytes in 2 shards). After: buckets `~53 MB cost` each → `8` stays busy past `70%`, tail `2` only at `~90%`.
 
 ## Risks
 
-* `FILE_OVERHEAD` mis-tuned → over-splits tiny-file dirs or under-splits large-file dirs. Mitigate via bench on target NVMe vs USB (`W=2` already caps).
-* Shard explosion capped `k≤6`, min chunk `64KB` cost.
+- `FILE_OVERHEAD` mis-tuned → over-splits tiny-file dirs or under-splits large-file dirs. Mitigate via bench on target NVMe vs USB (`W=2` already caps).
+- Shard explosion capped `k≤6`, min chunk `64KB` cost.
 
 ## Next Steps
 

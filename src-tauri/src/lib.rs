@@ -449,9 +449,83 @@ fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
     Ok(PathMeta { files: count, bytes, is_file: false, drive, removable })
 }
 
+#[cfg(windows)]
 fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
-    // Iterative to avoid stack overflow on deeply nested trees and to skip symlink loops.
-    // Use \\?\ long-path form on Windows to bypass MAX_PATH.
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FIND_FIRST_EX_LARGE_FETCH,
+        WIN32_FIND_DATAW,
+    };
+
+    let mut stack = vec![to_long_path(dir).replace('/', "\\")];
+    while let Some(current) = stack.pop() {
+        let current_clean = current.trim_end_matches('\\');
+        let pattern = format!("{current_clean}\\*");
+        let pattern_utf16: Vec<u16> = pattern.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut find_data = WIN32_FIND_DATAW::default();
+
+        let handle = unsafe {
+            FindFirstFileExW(
+                PCWSTR(pattern_utf16.as_ptr()),
+                FindExInfoBasic,
+                &mut find_data as *mut _ as *mut _,
+                FindExSearchNameMatch,
+                None,
+                FIND_FIRST_EX_LARGE_FETCH,
+            )
+        };
+
+        let handle = match handle {
+            Ok(h) if !h.is_invalid() => h,
+            _ => continue,
+        };
+
+        loop {
+            let len = find_data
+                .cFileName
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(find_data.cFileName.len());
+            let name_slice = &find_data.cFileName[..len];
+
+            // Ignore "." and ".."
+            let is_dot = len == 1 && name_slice[0] == 0x2E;
+            let is_dotdot = len == 2 && name_slice[0] == 0x2E && name_slice[1] == 0x2E;
+
+            if !is_dot && !is_dotdot {
+                let attrs = find_data.dwFileAttributes;
+                let is_reparse = (attrs & FILE_ATTRIBUTE_REPARSE_POINT.0) != 0;
+
+                if !is_reparse {
+                    let is_dir = (attrs & FILE_ATTRIBUTE_DIRECTORY.0) != 0;
+                    if is_dir {
+                        let name_os = OsString::from_wide(name_slice);
+                        let name_str = name_os.to_string_lossy();
+                        let sub_path = format!("{current_clean}\\{name_str}");
+                        stack.push(sub_path);
+                    } else {
+                        *count += 1;
+                        let file_size = ((find_data.nFileSizeHigh as u64) << 32)
+                            | (find_data.nFileSizeLow as u64);
+                        *bytes += file_size;
+                    }
+                }
+            }
+
+            if unsafe { FindNextFileW(handle, &mut find_data).is_err() } {
+                break;
+            }
+        }
+
+        let _ = unsafe { FindClose(handle) };
+    }
+}
+
+#[cfg(not(windows))]
+fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
     let mut stack = vec![std::path::PathBuf::from(to_long_path(dir))];
     while let Some(current) = stack.pop() {
         let rd = match std::fs::read_dir(&current) {
@@ -466,19 +540,17 @@ fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
             }
         };
         for entry in rd.flatten() {
-            let path = entry.path();
-            // Skip symlinks entirely — they can create cycles.
             if let Ok(ft) = entry.file_type() {
                 if ft.is_symlink() {
                     continue;
                 }
-            }
-            if let Ok(m) = entry.metadata() {
-                if m.is_file() {
-                    *count += 1;
-                    *bytes += m.len();
-                } else if m.is_dir() {
-                    stack.push(path);
+                if ft.is_dir() {
+                    stack.push(entry.path());
+                } else if ft.is_file() {
+                    if let Ok(m) = entry.metadata() {
+                        *count += 1;
+                        *bytes += m.len();
+                    }
                 }
             }
         }
@@ -897,37 +969,6 @@ fn parse_filter(filter: Option<&str>) -> Vec<String> {
     out
 }
 
-#[derive(serde::Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CompareResult {
-    pub files_to_copy: u32,
-    pub bytes_to_copy: u64,
-    pub skipped: u32,
-    pub extra: u32,
-}
-
-#[tauri::command]
-async fn compare_paths(
-    source: String,
-    destination: String,
-    mode: String,
-    filter: Option<String>,
-) -> Result<CompareResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let effective_dest = resolve_effective_dest(&source, &destination, "into");
-        let patterns = parse_filter(filter.as_deref());
-        // Use scan logic but with filter: for now just count via scan (filter ignored for compare, but we parse)
-        let _ = patterns;
-        let (bytes, files) = scan(&source, &effective_dest, &mode);
-        // For filtered compare we would subtract filtered, but keep simple: filesToCopy = files, extra/skipped from extra scan
-        let skipped = 0u32;
-        let extra = 0u32;
-        Ok(CompareResult { files_to_copy: files, bytes_to_copy: bytes, skipped, extra })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 #[tauri::command]
 async fn warp_file_op(
     window: Window,
@@ -1149,18 +1190,18 @@ fn ensure_free_space(
 /// remains a hard single-process gate (IPG per-process).
 fn should_attempt_parallel(
     requested: Option<u8>,
-    _mode: &str,
+    mode: &str,
     throttle: u32,
     total_files: u64,
     total_bytes: u64,
     top_dirs: usize,
 ) -> bool {
-    if throttle > 0 {
+    if mode == "sync" || throttle > 0 || top_dirs < 2 {
         return false;
     }
     match requested {
         Some(w) if w > 1 => true,
-        _ => total_files >= 400 && total_bytes >= 256 * 1024 * 1024 && top_dirs >= 2,
+        _ => total_files >= 400 && total_bytes >= 256 * 1024 * 1024,
     }
 }
 
@@ -1204,11 +1245,11 @@ fn run_transfer(
     check_network_dest(&effective_dest)?;
     check_fat32_source(&source, &effective_dest)?;
 
-    // Quick tree stats decide whether partitioning for parallelism is worth it
-    // at all. This walk doubles as the partitioner's first pass on Windows
-    // metadata cache, so the parallel candidate pays it only once.
     let (quick_bytes, quick_files) = dir_stats(&source);
     let top_dirs = shards::top_level_dir_count(&source);
+
+    let is_network = source.starts_with(r"\\") || effective_dest.starts_with(r"\\");
+    let is_usb = is_path_on_usb(&source) || is_path_on_usb(&effective_dest);
 
     let mut engine_workers =
         if should_attempt_parallel(workers, &mode, throttle, quick_files, quick_bytes, top_dirs) {
@@ -1219,8 +1260,8 @@ fn run_transfer(
                 usize::MAX, // shard count unknown pre-partition; hard gates re-checked inside
                 quick_files,
                 quick_bytes,
-                is_path_on_usb(&source) || is_path_on_usb(&effective_dest),
-                source.starts_with(r"\\") || effective_dest.starts_with(r"\\"),
+                is_usb,
+                is_network,
             )
         } else {
             1
@@ -1253,6 +1294,8 @@ fn run_transfer(
             verify,
             engine_workers,
             filter.clone(),
+            quick_bytes,
+            quick_files,
         )?
     } else {
         warp_file_op_sync(
@@ -1266,6 +1309,9 @@ fn run_transfer(
             throttle,
             verify,
             filter.clone(),
+            quick_bytes,
+            quick_files as u32,
+            workers,
         )?
     };
 
@@ -1276,7 +1322,6 @@ fn run_transfer(
 /// The sequential transfer pipeline (scan -> copy -> verify). Runs on the
 /// blocking thread pool via `spawn_blocking` — see `warp_file_op`. Preflights
 /// and destination resolution already ran in `run_transfer`.
-#[allow(clippy::too_many_arguments)]
 fn warp_file_op_sync(
     window: Window,
     control: &TransferControl,
@@ -1288,9 +1333,17 @@ fn warp_file_op_sync(
     throttle: u32, // target MB/s, 0 = unlimited
     verify: bool,  // run a verification pass after a successful transfer
     filter: Option<String>,
+    quick_bytes: u64,
+    quick_files: u32,
+    workers: Option<u8>,
 ) -> Result<WarpSummary, String> {
-    // Scan for total size (determines whether progress bar is determinate)
-    let (mut total_bytes, total_files_scan) = scan(&source, &effective_dest, &mode);
+    // For sync mode, count deletions; for copy/move, reuse the ultra-fast Win32 kernel scan
+    // to bypass the 2-second robocopy /L dry-run process entirely.
+    let (mut total_bytes, total_files_scan) = if mode == "sync" {
+        scan(&source, &effective_dest, &mode)
+    } else {
+        (quick_bytes, quick_files)
+    };
     let indeterminate = total_bytes == 0; // empty folder or all zero-byte files
 
     ensure_free_space(&destination, &effective_dest, total_bytes)?;
@@ -1311,8 +1364,8 @@ fn warp_file_op_sync(
     args.extend([
         "/E".to_string(),
         "/NP".to_string(),
-        "/R:3".to_string(),
-        "/W:5".to_string(),
+        "/R:1".to_string(),
+        "/W:1".to_string(),
         "/BYTES".to_string(),
         "/NJH".to_string(),
         "/NJS".to_string(),
@@ -1365,11 +1418,24 @@ fn warp_file_op_sync(
         args.push("/MT:4".to_string());
         args.push("/Z".to_string());
     } else if is_large {
-        // Large file on internal drive: enable restartable for pause/resume at cost of MT
-        args.push("/MT:8".to_string());
-        args.push("/Z".to_string());
+        // Large dataset (>1 GiB) on internal drive: use unbuffered I/O (/J) to avoid cache thrashing
+        let mt = match workers {
+            Some(w) if w >= 8 => 128,
+            Some(w) if w >= 4 => 64,
+            Some(w) if w >= 2 => 32,
+            _ => 32,
+        };
+        args.push(format!("/MT:{}", mt));
+        args.push("/J".to_string());
     } else {
-        args.push("/MT:32".to_string());
+        // Small/medium dataset: keep buffered I/O to leverage Windows RAM cache for fast file creation
+        let mt = match workers {
+            Some(w) if w >= 8 => 128,
+            Some(w) if w >= 4 => 64,
+            Some(w) if w >= 2 => 32,
+            _ => 64,
+        };
+        args.push(format!("/MT:{}", mt));
     }
 
     // Spawn
@@ -1408,7 +1474,7 @@ fn warp_file_op_sync(
         error_message: String::new(),
         verified: false,
         verify_mismatches: 0,
-        workers_used: 1,
+        workers_used: workers.unwrap_or(0).max(1) as u32,
         retried_ok: 0,
     };
 
@@ -1905,10 +1971,9 @@ fn run_shard(
     Ok(pool::ShardOutcome::from_local(id, &local, exit_code, had_exit_code))
 }
 
-/// Direct file-copy for flat-dir file-chunk shards (Plan B). Copies only the
-/// files listed in `shard.chunk_files` from `shard.src` to `shard.dst`.
-/// Updates the shared `Tracker` and `LocalCounters` per file, respects
-/// `control` pause/cancel, and `skip_conflict` (/XO /XN).
+/// File-chunk shard via robocopy (Plan B) — keeps robocopy's /MT and buffering.
+/// Uses `robocopy src dst file1 file2 ...` so we stay on the Windows engine for all
+/// COPY/MOVE/SYNC. Falls back to direct copy only if arg list would overflow.
 fn run_file_chunk_shard(
     control: &TransferControl,
     shard: &shards::Shard,
@@ -1917,47 +1982,37 @@ fn run_file_chunk_shard(
     skip_conflict: bool,
 ) -> Result<pool::ShardOutcome, String> {
     let files = shard.chunk_files.as_ref().ok_or("not a file chunk")?;
-    let mut local = pool::LocalCounters::default();
-    let src_dir = std::path::Path::new(&shard.src);
-    let dst_dir = std::path::Path::new(&shard.dst);
-    // Ensure dest dir exists
-    let _ = std::fs::create_dir_all(to_long_path(&shard.dst));
-    for name in files {
-        while control.is_paused() && !control.is_cancelled() {
-            std::thread::sleep(std::time::Duration::from_millis(80));
-        }
-        if control.is_cancelled() {
-            break;
-        }
-        let src_path = src_dir.join(name);
-        let dst_path = dst_dir.join(name);
-        let src_long = to_long_path(&src_path.to_string_lossy());
-        let dst_long = to_long_path(&dst_path.to_string_lossy());
-        // Skip if filtered? Already filtered at shard creation
-        // Conflict skip: if dest exists, skip
-        if skip_conflict && std::fs::metadata(&dst_long).is_ok() {
-            local.skipped += 1;
-            local.seen += 1;
-            // Still count bytes for progress as skipped? For Skip, track as Same file (is_same)
-            if let Some(t) = tracker.as_ref() {
-                let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
-                let line = RoboLine::FileHeader { is_same: true, is_error: false, size: 0, name: name.clone() };
-                if let Some(p) = g.ingest(&line, Instant::now()) {
-                    drop(g);
-                    sink.progress(&p);
-                }
+    // Windows cmd limit 8191 — estimate 20 chars per file + overhead. If too many, fallback to direct.
+    let est_len: usize =
+        shard.src.len() + shard.dst.len() + files.iter().map(|f| f.len() + 1).sum::<usize>() + 200;
+    if est_len > 7000 {
+        // Fallback: direct copy chunk-by-chunk (rare, only for >~300 files per chunk)
+        let mut local = pool::LocalCounters::default();
+        let src_dir = std::path::Path::new(&shard.src);
+        let dst_dir = std::path::Path::new(&shard.dst);
+        let _ = std::fs::create_dir_all(to_long_path(&shard.dst));
+        for name in files {
+            while control.is_paused() && !control.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(80));
             }
-            continue;
-        }
-        let meta = match std::fs::metadata(&src_long) {
-            Ok(m) => m,
-            Err(e) => {
-                local.failed += 1;
+            if control.is_cancelled() {
+                break;
+            }
+            let src_path = src_dir.join(name);
+            let dst_path = dst_dir.join(name);
+            let src_long = to_long_path(&src_path.to_string_lossy());
+            let dst_long = to_long_path(&dst_path.to_string_lossy());
+            if skip_conflict && std::fs::metadata(&dst_long).is_ok() {
+                local.skipped += 1;
                 local.seen += 1;
-                sink.error_line(&format!("{} — file not found: {}", name, e));
                 if let Some(t) = tracker.as_ref() {
                     let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
-                    let line = RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name: name.clone() };
+                    let line = RoboLine::FileHeader {
+                        is_same: true,
+                        is_error: false,
+                        size: 0,
+                        name: name.clone(),
+                    };
                     if let Some(p) = g.ingest(&line, Instant::now()) {
                         drop(g);
                         sink.progress(&p);
@@ -1965,39 +2020,139 @@ fn run_file_chunk_shard(
                 }
                 continue;
             }
-        };
-        let size = meta.len();
-        match std::fs::copy(&src_long, &dst_long) {
-            Ok(_) => {
-                local.transferred += 1;
-                local.seen += 1;
-                local.counted_bytes = local.counted_bytes.saturating_add(size);
-                if let Some(t) = tracker.as_ref() {
-                    let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
-                    let line = RoboLine::FileHeader { is_same: false, is_error: false, size, name: name.clone() };
-                    if let Some(p) = g.ingest(&line, Instant::now()) {
-                        drop(g);
-                        sink.progress(&p);
+            let meta = match std::fs::metadata(&src_long) {
+                Ok(m) => m,
+                Err(e) => {
+                    local.failed += 1;
+                    local.seen += 1;
+                    sink.error_line(&format!("{} — file not found: {}", name, e));
+                    if let Some(t) = tracker.as_ref() {
+                        let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                        let line = RoboLine::FileHeader {
+                            is_same: false,
+                            is_error: true,
+                            size: 0,
+                            name: name.clone(),
+                        };
+                        if let Some(p) = g.ingest(&line, Instant::now()) {
+                            drop(g);
+                            sink.progress(&p);
+                        }
+                    }
+                    continue;
+                }
+            };
+            let size = meta.len();
+            match std::fs::copy(&src_long, &dst_long) {
+                Ok(_) => {
+                    local.transferred += 1;
+                    local.seen += 1;
+                    local.counted_bytes += size;
+                    if let Some(t) = tracker.as_ref() {
+                        let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                        let line = RoboLine::FileHeader {
+                            is_same: false,
+                            is_error: false,
+                            size,
+                            name: name.clone(),
+                        };
+                        if let Some(p) = g.ingest(&line, Instant::now()) {
+                            drop(g);
+                            sink.progress(&p);
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                local.failed += 1;
-                local.seen += 1;
-                sink.error_line(&format!("{} — copy failed: {}", name, e));
-                if let Some(t) = tracker.as_ref() {
-                    let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
-                    let line = RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name: name.clone() };
-                    if let Some(p) = g.ingest(&line, Instant::now()) {
-                        drop(g);
-                        sink.progress(&p);
+                Err(e) => {
+                    local.failed += 1;
+                    local.seen += 1;
+                    sink.error_line(&format!("{} — copy failed: {}", name, e));
+                    if let Some(t) = tracker.as_ref() {
+                        let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                        let line = RoboLine::FileHeader {
+                            is_same: false,
+                            is_error: true,
+                            size: 0,
+                            name: name.clone(),
+                        };
+                        if let Some(p) = g.ingest(&line, Instant::now()) {
+                            drop(g);
+                            sink.progress(&p);
+                        }
                     }
                 }
             }
         }
+        let exit_code = if local.failed > 0 { 8 } else { 0 };
+        return Ok(pool::ShardOutcome::from_local(shard.id, &local, exit_code, true));
     }
-    let exit_code = if local.failed > 0 { 8 } else { 0 };
-    let had_exit_code = true;
+    // Fast path: robocopy with file list + /MT:8 (keeps Windows buffering, COPY:DAT, retries)
+    let mut args = vec![shard.src.clone(), shard.dst.clone()];
+    // Add file names (robocopy source destination [file ...])
+    for f in files {
+        // Basic sanitization: skip overly long or tricky names
+        if f.len() > 100 || f.contains("..") || f.contains('\\') || f.contains('/') {
+            continue;
+        }
+        args.push(f.clone());
+    }
+    if skip_conflict {
+        args.push("/XO".to_string());
+        args.push("/XN".to_string());
+    }
+    args.extend([
+        "/NP".to_string(),
+        "/R:3".to_string(),
+        "/W:5".to_string(),
+        "/BYTES".to_string(),
+        "/NJH".to_string(),
+        "/NJS".to_string(),
+        "/256".to_string(),
+        "/XJ".to_string(),
+        "/XJD".to_string(),
+        "/COPY:DAT".to_string(),
+        "/MT:8".to_string(),
+    ]);
+    // Reuse the standard robocopy runner so we get parse_line, Tracker, and JobObject handling
+    let mut child =
+        robocopy_cmd().args(&args).spawn().map_err(|e| format!("Failed to start robocopy: {e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    control.register(shard.id, child);
+    if let Some(stderr) = stderr {
+        let snk = sink.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().flatten() {
+                let t = line.trim().to_string();
+                if !t.is_empty() {
+                    snk.error_line(&t);
+                    log_event(&format!("robocopy stderr: {}", t));
+                }
+            }
+        });
+    }
+    let mut local = pool::LocalCounters::default();
+    if let Some(out) = stdout {
+        let snk_p = sink.clone();
+        let snk_e = sink.clone();
+        pool::consume_stream(
+            BufReader::new(out),
+            &|| control.is_cancelled(),
+            tracker,
+            &mut local,
+            move |p| snk_p.progress(&p),
+            move |e| snk_e.error_line(&e),
+        );
+    }
+    let (exit_code, had_exit_code) = match control.take(shard.id) {
+        Some(ref mut c) => match c.wait() {
+            Ok(s) => match s.code() {
+                Some(v) => (v, true),
+                None => (-1, false),
+            },
+            Err(_) => (-1, false),
+        },
+        None => (-1, false),
+    };
     Ok(pool::ShardOutcome::from_local(shard.id, &local, exit_code, had_exit_code))
 }
 
@@ -2074,15 +2229,13 @@ fn collect_extra_files(source: &str, effective_dest: &str, filter: Option<&str>)
             let path_str = clean_long_prefix(&path.to_string_lossy());
             let name = entry.file_name().to_string_lossy().to_string();
             if !patterns.is_empty() && matches_filter(&name, &patterns) {
-                if ft.is_dir() {
-                    continue;
-                } else {
-                    continue;
-                }
+                continue;
             }
             if ft.is_file() {
                 let rel_str = if path_str.to_lowercase().starts_with(&dest_clean) {
-                    path_str[effective_dest.trim_end_matches('\\').len()..].trim_start_matches('\\').to_string()
+                    path_str[effective_dest.trim_end_matches('\\').len()..]
+                        .trim_start_matches('\\')
+                        .to_string()
                 } else {
                     // Fallback to Path strip_prefix
                     match path.strip_prefix(std::path::Path::new(effective_dest)) {
@@ -2097,7 +2250,11 @@ fn collect_extra_files(source: &str, effective_dest: &str, filter: Option<&str>)
                 let src_long = to_long_path(&src_counterpart.to_string_lossy());
                 if std::fs::metadata(&src_long).is_err() {
                     let sz = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    out.push(ExtraFile { full_path: path.to_string_lossy().to_string(), size: sz, name });
+                    out.push(ExtraFile {
+                        full_path: path.to_string_lossy().to_string(),
+                        size: sz,
+                        name,
+                    });
                 }
             } else if ft.is_dir() {
                 stack.push(path);
@@ -2135,11 +2292,14 @@ fn cleanup_extra_empty_dirs(source: &str, effective_dest: &str, filter: Option<&
         }
     }
     // Deepest first (longest path)
-    dirs.sort_by(|a, b| b.to_string_lossy().len().cmp(&a.to_string_lossy().len()));
+    dirs.sort_by_key(|b| std::cmp::Reverse(b.to_string_lossy().len()));
     let mut removed = 0u32;
     for dir in dirs {
         let dir_str_clean = clean_long_prefix(&dir.to_string_lossy());
-        if dir_str_clean.trim_end_matches('\\').eq_ignore_ascii_case(effective_dest.trim_end_matches('\\')) {
+        if dir_str_clean
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(effective_dest.trim_end_matches('\\'))
+        {
             continue;
         }
         let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -2147,7 +2307,9 @@ fn cleanup_extra_empty_dirs(source: &str, effective_dest: &str, filter: Option<&
             continue;
         }
         let rel_str = if dir_str_clean.to_lowercase().starts_with(&dest_root_clean) {
-            dir_str_clean[effective_dest.trim_end_matches('\\').len()..].trim_start_matches('\\').to_string()
+            dir_str_clean[effective_dest.trim_end_matches('\\').len()..]
+                .trim_start_matches('\\')
+                .to_string()
         } else {
             match dir.strip_prefix(std::path::Path::new(effective_dest)) {
                 Ok(r) => r.to_string_lossy().to_string(),
@@ -2187,62 +2349,36 @@ fn transfer_parallel(
     verify: bool,
     workers_requested: usize,
     filter: Option<String>,
+    total_bytes: u64,
+    total_files: u64,
 ) -> Result<WarpSummary, String> {
     let start = Instant::now();
 
-    let mut shard_list = shards::partition(source, effective_dest);
-    // — Balanced sharding: Plan A (largest-first) + conditional Plan B (flat monster split)
-    // If only 1 shard but explicit workers >1, try to split flat monster before falling back
-    if shard_list.len() < 2 {
-        if workers_requested > 1 {
-            let try_balanced = shards::partition_balanced(source, effective_dest, workers_requested);
-            if try_balanced.len() >= 2 || try_balanced.iter().any(|s| s.chunk_files.is_some()) {
-                shard_list = try_balanced;
-            } else {
-                return warp_file_op_sync(
-                    window,
-                    control,
-                    source.to_string(),
-                    destination.to_string(),
-                    effective_dest.to_string(),
-                    mode.to_string(),
-                    conflict.to_string(),
-                    throttle,
-                    verify,
-                    filter.clone(),
-                );
-            }
-        } else {
-            return warp_file_op_sync(
-                window,
-                control,
-                source.to_string(),
-                destination.to_string(),
-                effective_dest.to_string(),
-                mode.to_string(),
-                conflict.to_string(),
-                throttle,
-                verify,
-                filter.clone(),
-            );
-        }
+    let shard_list = shards::partition_balanced_with_stats(
+        source,
+        effective_dest,
+        workers_requested,
+        total_bytes,
+    );
+    if shard_list.len() < 2 && !shard_list.iter().any(|s| s.chunk_files.is_some()) {
+        return warp_file_op_sync(
+            window,
+            control,
+            source.to_string(),
+            destination.to_string(),
+            effective_dest.to_string(),
+            mode.to_string(),
+            conflict.to_string(),
+            throttle,
+            verify,
+            filter,
+            total_bytes,
+            total_files as u32,
+            Some(workers_requested as u8),
+        );
     }
 
-    let mut workers = workers_requested.min(shard_list.len()).max(1);
-    // Try balanced version if workers >1
-    if workers > 1 {
-        let balanced = shards::partition_balanced(source, effective_dest, workers);
-        // Use balanced if it introduces file-chunk shards or changes count (i.e., Plan B triggered)
-        let has_chunks = balanced.iter().any(|s| s.chunk_files.is_some());
-        if has_chunks || balanced.len() != shard_list.len() {
-            shard_list = balanced;
-            // Recompute workers cap after balanced (may have more shards)
-            workers = workers_requested.min(shard_list.len()).max(1);
-        } else {
-            // Even without chunk split, balanced sorts largest-first — use it for better queue order
-            shard_list = balanced;
-        }
-    }
+    let workers = workers_requested.min(shard_list.len()).max(1);
 
     // — Two-phase Sync: collect *EXTRA (dest-only) for delete phase ---------
     let is_sync = mode == "sync";
@@ -2257,7 +2393,10 @@ fn transfer_parallel(
         extra_bytes = extra_files_vec.iter().map(|e| e.size).sum();
         extra_count = extra_files_vec.len() as u32;
         if extra_count > 0 {
-            log_event(&format!("sync delete phase: {} extra files, {} bytes", extra_count, extra_bytes));
+            log_event(&format!(
+                "sync delete phase: {} extra files, {} bytes",
+                extra_count, extra_bytes
+            ));
         }
     }
     let total_bytes = source_bytes.saturating_add(extra_bytes);
@@ -2277,7 +2416,8 @@ fn transfer_parallel(
 
     // Metadata kept aside BEFORE the queue consumes the shards — retries need
     // each failed shard's src/dst/root_only/chunk_files back.
-    let shard_meta: HashMap<u64, (String, String, bool, Option<Vec<String>>)> = shard_list
+    type ShardMeta = (String, String, bool, Option<Vec<String>>);
+    let shard_meta: HashMap<u64, ShardMeta> = shard_list
         .iter()
         .map(|s| (s.id, (s.src.clone(), s.dst.clone(), s.root_only, s.chunk_files.clone())))
         .collect();
@@ -2305,14 +2445,16 @@ fn transfer_parallel(
     // both phases, done_shards only tracks copy shards.
     let mut sync_delete_transferred: u32 = 0;
     let mut sync_delete_failed: u32 = 0;
-    let mut sync_delete_bytes: u64 = 0;
     if is_sync && !extra_files_vec.is_empty() {
         use std::sync::atomic::Ordering;
         let dq: Mutex<VecDeque<ExtraFile>> = Mutex::new(extra_files_vec.into_iter().collect());
         let failed = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let transferred = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        log_event(&format!("sync phase 1: deleting {} extra files with {} workers", extra_count, workers));
+        log_event(&format!(
+            "sync phase 1: deleting {} extra files with {} workers",
+            extra_count, workers
+        ));
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
@@ -2327,28 +2469,47 @@ fn transfer_parallel(
                         let entry = lock_ok(&dq).pop_front();
                         let Some(entry) = entry else { break };
                         let long = to_long_path(&entry.full_path);
-                        let res = std::fs::remove_file(&long).or_else(|_| std::fs::remove_dir_all(&long));
-                        if res.is_ok() {
-                            transferred.fetch_add(1, Ordering::SeqCst);
-                            bytes.fetch_add(entry.size, Ordering::SeqCst);
-                            let mut g = lock_ok(&tracker);
-                            if let Some(p) = g.ingest(&RoboLine::Extra { size: entry.size, name: entry.name.clone() }, Instant::now()) {
-                                drop(g);
-                                sink.progress(&p);
-                            }
-                        } else {
-                            let e = res.unwrap_err();
-                            if e.kind() != std::io::ErrorKind::NotFound {
-                                failed.fetch_add(1, Ordering::SeqCst);
-                                sink.error_line(&format!("Delete failed {}: {}", entry.full_path, e));
-                                log_event(&format!("sync delete failed {}: {}", hash_path(&entry.full_path), e));
-                            } else {
+                        let res =
+                            std::fs::remove_file(&long).or_else(|_| std::fs::remove_dir_all(&long));
+                        match res {
+                            Ok(()) => {
                                 transferred.fetch_add(1, Ordering::SeqCst);
                                 bytes.fetch_add(entry.size, Ordering::SeqCst);
                                 let mut g = lock_ok(&tracker);
-                                if let Some(p) = g.ingest(&RoboLine::Extra { size: entry.size, name: entry.name.clone() }, Instant::now()) {
+                                if let Some(p) = g.ingest(
+                                    &RoboLine::Extra { size: entry.size, name: entry.name.clone() },
+                                    Instant::now(),
+                                ) {
                                     drop(g);
                                     sink.progress(&p);
+                                }
+                            }
+                            Err(e) => {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    failed.fetch_add(1, Ordering::SeqCst);
+                                    sink.error_line(&format!(
+                                        "Delete failed {}: {}",
+                                        entry.full_path, e
+                                    ));
+                                    log_event(&format!(
+                                        "sync delete failed {}: {}",
+                                        hash_path(&entry.full_path),
+                                        e
+                                    ));
+                                } else {
+                                    transferred.fetch_add(1, Ordering::SeqCst);
+                                    bytes.fetch_add(entry.size, Ordering::SeqCst);
+                                    let mut g = lock_ok(&tracker);
+                                    if let Some(p) = g.ingest(
+                                        &RoboLine::Extra {
+                                            size: entry.size,
+                                            name: entry.name.clone(),
+                                        },
+                                        Instant::now(),
+                                    ) {
+                                        drop(g);
+                                        sink.progress(&p);
+                                    }
                                 }
                             }
                         }
@@ -2359,7 +2520,7 @@ fn transfer_parallel(
         });
         sync_delete_transferred = transferred.load(Ordering::SeqCst);
         sync_delete_failed = failed.load(Ordering::SeqCst);
-        sync_delete_bytes = bytes.load(Ordering::SeqCst);
+        let sync_delete_bytes = bytes.load(Ordering::SeqCst);
         // Cleanup empty extra dirs after files are gone (sequential, bottom-up)
         let dirs_removed = cleanup_extra_empty_dirs(source, effective_dest, filter.as_deref());
         if dirs_removed > 0 {
@@ -2381,7 +2542,10 @@ fn transfer_parallel(
                 workers_used: workers as u32,
                 retried_ok: 0,
             };
-            log_event(&format!("sync parallel cancelled during delete phase after {} ms", s.duration_ms));
+            log_event(&format!(
+                "sync parallel cancelled during delete phase after {} ms",
+                s.duration_ms
+            ));
             return Ok(s);
         }
         if sync_delete_failed > 0 {
@@ -2401,10 +2565,16 @@ fn transfer_parallel(
                 workers_used: workers as u32,
                 retried_ok: 0,
             };
-            log_event(&format!("sync delete phase failed: {} files, aborting copy", sync_delete_failed));
+            log_event(&format!(
+                "sync delete phase failed: {} files, aborting copy",
+                sync_delete_failed
+            ));
             return Ok(s);
         }
-        log_event(&format!("sync phase 1 complete: {} files deleted, {} bytes", sync_delete_transferred, sync_delete_bytes));
+        log_event(&format!(
+            "sync phase 1 complete: {} files deleted, {} bytes",
+            sync_delete_transferred, sync_delete_bytes
+        ));
         // Reset live_workers decay already done; done_shards remains 0 for copy phase
     }
 
@@ -2516,7 +2686,9 @@ fn transfer_parallel(
             if prev.failed == 0 && prev.exit_code < 8 {
                 break;
             }
-            let Some((src, dst, root_only, chunk_files)) = shard_meta.get(&id).cloned() else { break };
+            let Some((src, dst, root_only, chunk_files)) = shard_meta.get(&id).cloned() else {
+                break;
+            };
             log_event(&format!(
                 "retry shard {} attempt {}/{} ({} failed files)",
                 id,
@@ -2709,8 +2881,7 @@ pub fn run() {
             cancel_warp,
             pause_warp,
             undo_last,
-            check_health,
-            compare_paths
+            check_health
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -3217,6 +3388,7 @@ mod real_robocopy {
         None
     }
 
+    #[allow(dead_code)]
     struct PerfFixture {
         root: PathBuf,
         dirs: usize,
@@ -3365,17 +3537,24 @@ mod real_robocopy {
         std::fs::write(dst.join("extra_dir/c.txt"), b"extra").unwrap();
         // extra files should be extra.txt and extra_dir/c.txt (2)
         let extras = collect_extra_files(&src.to_string_lossy(), &dst.to_string_lossy(), None);
-        assert_eq!(extras.len(), 2, "extras={:?}", extras.iter().map(|e| &e.full_path).collect::<Vec<_>>());
+        assert_eq!(
+            extras.len(),
+            2,
+            "extras={:?}",
+            extras.iter().map(|e| &e.full_path).collect::<Vec<_>>()
+        );
         assert!(extras.iter().any(|e| e.name == "extra.txt"));
         assert!(extras.iter().any(|e| e.name == "c.txt"));
         // Filter should exclude *.txt from extras if we set filter
-        let filtered = collect_extra_files(&src.to_string_lossy(), &dst.to_string_lossy(), Some("*.txt"));
+        let filtered =
+            collect_extra_files(&src.to_string_lossy(), &dst.to_string_lossy(), Some("*.txt"));
         assert_eq!(filtered.len(), 0, "filtered extras should be 0");
         // Cleanup empty extra dirs after removing files
         for e in &extras {
             let _ = std::fs::remove_file(e.full_path.clone());
         }
-        let removed = cleanup_extra_empty_dirs(&src.to_string_lossy(), &dst.to_string_lossy(), None);
+        let removed =
+            cleanup_extra_empty_dirs(&src.to_string_lossy(), &dst.to_string_lossy(), None);
         assert_eq!(removed, 1, "extra_dir should be removed");
         assert!(!dst.join("extra_dir").exists());
         assert!(dst.join("sub").exists());

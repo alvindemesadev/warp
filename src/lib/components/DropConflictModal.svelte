@@ -36,13 +36,15 @@
     border: none;
     padding: 0;
     margin: 0;
-    background: rgba(0, 0, 0, 0.65);
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(6px);
     cursor: default;
   }
   .modal {
     position: relative;
-    background: #1c1c1e;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--modal-bg);
+    border: 1px solid var(--modal-border);
+    box-shadow: var(--modal-shadow);
     border-radius: 18px;
     padding: 22px;
     max-width: 320px;
@@ -70,15 +72,22 @@
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
+    transition: opacity 0.15s, background 0.15s;
   }
   .btn--source {
     border: 1px solid rgba(10, 132, 255, 0.3);
-    background: rgba(10, 132, 255, 0.1);
+    background: rgba(10, 132, 255, 0.12);
     color: var(--accent);
+  }
+  .btn--source:hover {
+    background: rgba(10, 132, 255, 0.2);
   }
   .btn--dest {
     border: 1px solid rgba(48, 209, 88, 0.3);
-    background: rgba(48, 209, 88, 0.1);
+    background: rgba(48, 209, 88, 0.12);
     color: var(--green);
+  }
+  .btn--dest:hover {
+    background: rgba(48, 209, 88, 0.2);
   }
 </style>

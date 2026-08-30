@@ -6,7 +6,6 @@
   import { transfer } from "$lib/stores/transfer.svelte";
   import { updater } from "$lib/stores/updater.svelte";
   import { ui } from "$lib/stores/ui.svelte";
-  import { comparePaths } from "$lib/services/warp";
   import {
     listenWarpProgress,
     listenWarpError,
@@ -26,15 +25,23 @@
   import OptionsPanel from "$lib/components/OptionsPanel.svelte";
   import ProgressCard from "$lib/components/ProgressCard.svelte";
   import ResultCards from "$lib/components/ResultCards.svelte";
-  import CompareModal from "$lib/components/CompareModal.svelte";
 
   const win = getCurrentWindow();
+
+  // Keep document theme/scale in sync with ui store
+  $effect(() => {
+    // Access to track
+    void ui.theme;
+    void ui.scale;
+    ui.applyThemeAndScale();
+  });
 
   onMount(() => {
     getVersion()
       .then((v) => updater.initUpdater(v))
       .catch(() => {});
     transfer.initFromStorage();
+    ui.loadThemeAndScale();
 
     const unlisten: Array<() => void> = [];
     (async () => {
@@ -110,6 +117,18 @@
         e.preventDefault();
         void transfer.browseDest();
       }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        ui.zoomIn();
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "-" || e.key === "_")) {
+        e.preventDefault();
+        ui.zoomOut();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "0") {
+        e.preventDefault();
+        ui.setScale(1.0);
+      }
       if (e.key === "Enter" && transfer.canStart && !ui.showSyncWarning) {
         e.preventDefault();
         handleStart();
@@ -136,29 +155,6 @@
   function reset() {
     transfer.resetTransferOnly();
     ui.resetUi();
-  }
-
-  let showCompare = $state(false);
-  let compareResult = $state<{
-    filesToCopy: number;
-    bytesToCopy: number;
-    skipped: number;
-    extra: number;
-  } | null>(null);
-  async function doCompare() {
-    if (!transfer.sourcePath || !transfer.destPath) return;
-    try {
-      const r = await comparePaths({
-        source: transfer.sourcePath,
-        destination: transfer.destPath,
-        mode: transfer.mode,
-        filter: transfer.filter || null,
-      });
-      compareResult = r;
-      showCompare = true;
-    } catch {
-      ui.showSyncWarning = false;
-    }
   }
 </script>
 
@@ -213,15 +209,6 @@
     progress={updater.updateProgress}
     onDismiss={() => (updater.showUpdateModal = false)}
     onInstall={updater.installUpdate}
-  />
-{/if}
-{#if showCompare && compareResult}
-  <CompareModal
-    filesToCopy={compareResult.filesToCopy}
-    bytesToCopy={compareResult.bytesToCopy}
-    skipped={compareResult.skipped}
-    extra={compareResult.extra}
-    onClose={() => (showCompare = false)}
   />
 {/if}
 <Toast message={updater.toast} />
@@ -329,22 +316,14 @@
         </div>
       {/if}
 
-      <div class="engage-row">
-        <button
-          onclick={doCompare}
-          disabled={!transfer.canStart}
-          class="engage engage--secondary"
-          class:engage--disabled={!transfer.canStart}
-          title="Dry-run: show what would copy without copying">Compare</button
-        >
-        <button
-          onclick={handleStart}
-          disabled={!transfer.canStart}
-          class="engage"
-          class:engage--accent={transfer.canStart}
-          class:engage--disabled={!transfer.canStart}>{transfer.startLabel}</button
-        >
-      </div>
+      <button
+        onclick={handleStart}
+        disabled={!transfer.canStart}
+        class="engage"
+        class:engage--accent={transfer.canStart}
+        class:engage--disabled={!transfer.canStart}
+        style="margin-top: 14px">{transfer.startLabel}</button
+      >
 
       <p class="hint">
         {#if transfer.sourcePath && transfer.destPath && transfer.sourceInfo && !transfer.sourceInfo.isFile && !transfer.destInfo?.isFile}
@@ -384,8 +363,6 @@
 <style>
   .page {
     min-height: 100vh;
-    max-height: 100vh;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -468,27 +445,12 @@
   .engage--accent:hover {
     background: var(--accent-hover);
   }
-  .engage--secondary {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-secondary);
-    border: 1px solid var(--glass-border);
-    cursor: pointer;
-  }
-  .engage--secondary:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--text-primary);
-  }
   .engage--disabled {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--disabled-bg);
+    border: 1px solid var(--disabled-border);
     color: var(--text-tertiary);
     cursor: not-allowed;
     box-shadow: none;
-  }
-  .engage-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-top: 14px;
   }
   .hint {
     text-align: center;
@@ -508,7 +470,7 @@
     padding: 4px 12px;
     font-size: 11px;
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.32);
+    color: var(--text-tertiary);
     cursor: pointer;
     font-family: var(--font-sf);
     letter-spacing: 0.02em;
@@ -537,7 +499,7 @@
     background: transparent;
   }
   :global(::-webkit-scrollbar-thumb) {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--scrollbar-thumb);
     border-radius: 4px;
   }
   :global(button:focus-visible) {

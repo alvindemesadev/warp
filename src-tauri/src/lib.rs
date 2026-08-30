@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments, clippy::lines_filter_map_ok)]
 mod backend;
+mod engine_native;
 mod engine_seq;
 mod parser;
 mod pool;

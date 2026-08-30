@@ -72,7 +72,9 @@
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
-    transition: opacity 0.15s, background 0.15s;
+    transition:
+      opacity 0.15s,
+      background 0.15s;
   }
   .btn--source {
     border: 1px solid rgba(10, 132, 255, 0.3);

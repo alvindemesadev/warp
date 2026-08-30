@@ -1,4 +1,4 @@
-// @ts-nocheck
+/// <reference types="svelte" />
 // Updater store — check/download/install flow.
 
 import { check, type Update } from "@tauri-apps/plugin-updater";

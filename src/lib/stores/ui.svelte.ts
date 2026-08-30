@@ -1,4 +1,5 @@
-import { getCurrentWindow, currentMonitor, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
+/// <reference types="svelte" />
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 
 export class UiStore {
   showSyncWarning = $state(false);

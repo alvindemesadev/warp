@@ -39,7 +39,9 @@
     padding: 4px;
     display: flex;
     gap: 3px;
-    transition: background 0.2s, border-color 0.2s;
+    transition:
+      background 0.2s,
+      border-color 0.2s;
   }
   .mode-btn {
     flex: 1;

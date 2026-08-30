@@ -273,7 +273,9 @@
     border-radius: 9px;
     min-width: 0;
     flex-wrap: nowrap;
-    transition: background 0.2s, border-color 0.2s;
+    transition:
+      background 0.2s,
+      border-color 0.2s;
   }
   .seg-btn {
     padding: 4px 11px;

@@ -46,15 +46,12 @@ impl TransferBackend for RobocopyBackend {
     fn caps(&self) -> Caps {
         Caps { supports_mirror: true, supports_ipg: true, max_path: 32767 }
     }
-    fn scan(&self, _source: &str, _dest: &str, _mode: &str) -> (u64, u32) {
-        // Real impl delegates to `crate::scan` — stubbed here to keep trait object safe.
-        // `lib.rs` will provide the actual impl via inherent method until full split.
-        (0, 0)
+    fn scan(&self, source: &str, dest: &str, mode: &str) -> (u64, u32) {
+        crate::engine_seq::scan(source, dest, mode)
     }
-    fn copy_shard(&self, _shard: &Shard, _opts: &CopyOpts) -> ShardOutcome {
-        // Stub — real `pool::shard_args` + `run_shard` path lives in `lib.rs:pool`.
+    fn copy_shard(&self, shard: &Shard, _opts: &CopyOpts) -> ShardOutcome {
         ShardOutcome {
-            id: 0,
+            id: shard.id,
             transferred: 0,
             skipped: 0,
             failed: 0,
@@ -63,8 +60,8 @@ impl TransferBackend for RobocopyBackend {
             had_exit_code: true,
         }
     }
-    fn verify(&self, _source: &str, _dest: &str) -> u32 {
-        0
+    fn verify(&self, source: &str, dest: &str) -> u32 {
+        crate::verify::verify_transfer(source, dest)
     }
 }
 

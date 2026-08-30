@@ -129,8 +129,8 @@ mod tests {
         #[test]
         fn prop_file_header_size_bounded(s in "\\t.*\t.*\t[0-9]+\\t.*") {
             let r = parse_line(&s);
-            if let RoboLine::FileHeader { size, .. } = r {
-                assert!(size <= u64::MAX);
+            if let RoboLine::FileHeader { size: _, .. } = r {
+                // Verified valid u64 was parsed without panic
             }
         }
     }

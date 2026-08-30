@@ -463,7 +463,7 @@ mod tests {
         }
     }
 
-    fn all_files_under(root: &PathBuf) -> Vec<String> {
+    fn all_files_under(root: &std::path::Path) -> Vec<String> {
         let mut v = Vec::new();
         collect_recursive(root, &mut v);
         v.sort();

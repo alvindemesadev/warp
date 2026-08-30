@@ -19,7 +19,7 @@ export async function warpFileOp(args: {
   throttle: number;
   verify: boolean;
   workers: number;
-  filter?: string;
+  filter?: string | undefined;
 }): Promise<WarpSummary> {
   return invoke<WarpSummary>("warp_file_op", args);
 }

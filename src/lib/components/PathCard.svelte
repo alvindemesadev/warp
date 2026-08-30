@@ -253,7 +253,10 @@
     overflow: visible;
     position: relative;
     box-shadow: var(--card-shadow);
-    transition: border-color 0.15s, background 0.2s, box-shadow 0.2s;
+    transition:
+      border-color 0.15s,
+      background 0.2s,
+      box-shadow 0.2s;
   }
   .card--drag-active {
     border-color: var(--accent);

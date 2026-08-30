@@ -1,11 +1,18 @@
 #![allow(clippy::too_many_arguments, clippy::lines_filter_map_ok)]
 mod backend;
+mod engine_seq;
 mod parser;
 mod pool;
 mod preflight;
 mod progress;
 mod shards;
 mod trash;
+mod verify;
+
+pub use engine_seq::{parse_filter, warp_file_op_sync};
+pub use preflight::{ensure_free_space, is_path_on_usb, to_long_path};
+pub use progress::{fmt_speed, overall_pct};
+pub use verify::verify_transfer;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -73,7 +80,7 @@ fn assign_to_job(child: &std::process::Child) -> bool {
 /// Shared transfer control: every live robocopy child (one for the sequential
 /// engine, up to N for the parallel pool) registers here so cancellation,
 /// pausing, and window-close cleanup can reach them all.
-struct TransferControl {
+pub struct TransferControl {
     children: Mutex<HashMap<u64, std::process::Child>>,
     cancelled: AtomicBool,
     paused: AtomicBool,
@@ -193,171 +200,7 @@ pub struct PathMeta {
     pub removable: bool, // true if the drive is a removable/USB drive
 }
 
-// — Drive type detection (Windows) ------------------------------------------
-
-#[cfg(windows)]
-fn is_removable_drive(drive: &str) -> bool {
-    use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
-    let root = format!(r"{}\", drive.trim_end_matches(':'));
-    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
-    const DRIVE_REMOVABLE: u32 = 2;
-    unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) == DRIVE_REMOVABLE }
-}
-
-#[cfg(not(windows))]
-fn is_removable_drive(_drive: &str) -> bool {
-    false
-}
-
-#[allow(dead_code)]
-#[cfg(windows)]
-fn is_cloud_placeholder(path: &str) -> bool {
-    use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::GetFileAttributesW;
-    const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x00400000;
-    const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x00040000;
-    const FILE_ATTRIBUTE_OFFLINE: u32 = 0x00001000;
-    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-    let attrs = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
-    if attrs == u32::MAX {
-        return false;
-    }
-    (attrs
-        & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
-            | FILE_ATTRIBUTE_RECALL_ON_OPEN
-            | FILE_ATTRIBUTE_OFFLINE))
-        != 0
-}
-
-#[cfg(not(windows))]
-fn is_cloud_placeholder(_: &str) -> bool {
-    false
-}
-
-#[cfg(windows)]
-fn is_fat32_volume(path: &str) -> bool {
-    use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
-    let drive = extract_drive(path);
-    if drive.is_empty() {
-        return false;
-    }
-    let root = format!(r"{}\", drive.trim_end_matches(':'));
-    let wide_root: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut fs_buf = [0u16; 32];
-    unsafe {
-        let res = GetVolumeInformationW(
-            PCWSTR(wide_root.as_ptr()),
-            None,
-            None,
-            None,
-            None,
-            Some(&mut fs_buf),
-        );
-        if res.is_err() {
-            return false;
-        }
-        let len = fs_buf.iter().position(|&c| c == 0).unwrap_or(fs_buf.len());
-        let name = String::from_utf16_lossy(&fs_buf[..len]);
-        name.eq_ignore_ascii_case("FAT32")
-    }
-}
-
-#[cfg(not(windows))]
-fn is_fat32_volume(_path: &str) -> bool {
-    false
-}
-
-#[cfg(windows)]
-fn free_bytes_available(path: &str) -> Option<u64> {
-    use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut free: u64 = 0;
-    unsafe {
-        let res =
-            GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut free as *mut u64), None, None);
-        if res.is_ok() {
-            Some(free)
-        } else {
-            None
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn free_bytes_available(_path: &str) -> Option<u64> {
-    None
-}
-
-fn health_mbps(dest: &str) -> Option<f64> {
-    let probe = std::path::Path::new(dest).join(".warp-health-probe");
-    let start = Instant::now();
-    let data = vec![0u8; 64 * 1024];
-    let res = (|| {
-        let mut f =
-            std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&probe)?;
-        f.write_all(&data)?;
-        f.sync_all()?;
-        Ok::<_, std::io::Error>(())
-    })();
-    let elapsed = start.elapsed().as_secs_f64();
-    let _ = std::fs::remove_file(&probe);
-    if res.is_err() || elapsed <= 0.0 {
-        return None;
-    }
-    Some((64.0 * 1024.0) / elapsed / 1024.0 / 1024.0)
-}
-
-/// Convert to `\\?\` long-path form for Windows MAX_PATH bypass.
-/// `C:\very\long` -> `\\?\C:\very\long`, `\\server\share` -> `\\?\UNC\server\share`. No-op on non-Windows or already prefixed.
-pub fn to_long_path(p: &str) -> String {
-    if p.starts_with(r"\\?\") {
-        return p.to_string();
-    }
-    if let Some(stripped) = p.strip_prefix(r"\\") {
-        return format!(r"\\?\UNC\{}", stripped);
-    }
-    if p.len() > 240 && std::path::Path::new(p).is_absolute() {
-        return format!(r"\\?\{}", p);
-    }
-    p.to_string()
-}
-
-/// Returns largest file size in `dir` (or 0 if none). Iterative, skips symlinks, caps early at >4GB for FAT32 preflight.
-fn max_file_size(dir: &str) -> u64 {
-    let mut max = 0u64;
-    let mut stack = vec![std::path::PathBuf::from(to_long_path(dir))];
-    while let Some(current) = stack.pop() {
-        if let Ok(rd) = std::fs::read_dir(&current) {
-            for entry in rd.flatten() {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_symlink() {
-                        continue;
-                    }
-                }
-                if let Ok(m) = entry.metadata() {
-                    if m.is_file() {
-                        let sz = m.len();
-                        if sz > max {
-                            max = sz;
-                            if max > 4_294_967_295 {
-                                // Already over FAT32 limit, can early-return
-                                return max;
-                            }
-                        }
-                    } else if m.is_dir() {
-                        stack.push(entry.path());
-                    }
-                }
-            }
-        }
-    }
-    max
-}
-
-fn hash_path(p: &str) -> String {
+pub(crate) fn hash_path(p: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(p.as_bytes());
@@ -365,7 +208,7 @@ fn hash_path(p: &str) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}", result[0], result[1], result[2], result[3])
 }
 
-fn log_json(level: &str, event: &str, fields: serde_json::Value) {
+pub(crate) fn log_json(level: &str, event: &str, fields: serde_json::Value) {
     let path = std::env::temp_dir().join("warp.log");
     // Rotate at 5 MB
     if let Ok(meta) = std::fs::metadata(&path) {
@@ -396,7 +239,7 @@ fn log_json(level: &str, event: &str, fields: serde_json::Value) {
     }
 }
 
-fn log_event(msg: &str) {
+pub(crate) fn log_event(msg: &str) {
     log_json("info", "event", serde_json::json!({ "msg": msg }));
 }
 
@@ -444,7 +287,7 @@ fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
     let mut bytes = 0u64;
     walk_dir(&path, &mut count, &mut bytes);
 
-    let removable = !drive.is_empty() && is_removable_drive(&drive);
+    let removable = !drive.is_empty() && preflight::is_removable_drive(&drive);
 
     Ok(PathMeta { files: count, bytes, is_file: false, drive, removable })
 }
@@ -570,7 +413,7 @@ pub fn dir_stats(dir: &str) -> (u64, u64) {
 /// are removed. Any directory that still contains files is left untouched.
 /// This is used after a `/MOVE` to clean up leftover empty folders WITHOUT
 /// risking deletion of files that were skipped and intentionally left behind.
-fn remove_empty_dirs(dir: &std::path::Path) -> bool {
+pub(crate) fn remove_empty_dirs(dir: &std::path::Path) -> bool {
     // Handle long paths via \\?\ prefix
     let dir_str = dir.to_string_lossy().to_string();
     let long = std::path::PathBuf::from(to_long_path(&dir_str));
@@ -650,88 +493,15 @@ async fn undo_last() -> Result<String, String> {
 
 #[tauri::command]
 async fn check_health(path: String) -> Result<Option<f64>, String> {
-    Ok(health_mbps(&path))
-}
-
-// — Helpers -------------------------------------------------------------------
-// Parity with TypeScript: `overall_pct` <-> `src/lib/format.ts` (fmtBytes/fmtDuration) and
-// `fmt_speed` <-> `src/lib/format.ts:10` — keep unit thresholds/rounding identical. See also `pool.rs:85`.
-
-pub(crate) fn overall_pct(done: u64, total: u64) -> u32 {
-    if total == 0 {
-        return 0;
-    }
-    ((done as f64 / total as f64) * 100.0).clamp(0.0, 99.0) as u32
-}
-
-/// Keep in sync with `src/lib/format.ts:10` — same thresholds, same `toFixed(1)`/`toFixed(0)` choices.
-pub(crate) fn fmt_speed(bps: u64) -> String {
-    if bps >= 1_073_741_824 {
-        format!("{:.1} GB/s", bps as f64 / 1_073_741_824.0)
-    } else if bps >= 1_048_576 {
-        format!("{:.0} MB/s", bps as f64 / 1_048_576.0)
-    } else if bps >= 1_024 {
-        format!("{:.0} KB/s", bps as f64 / 1_024.0)
-    } else {
-        format!("{} B/s", bps)
-    }
-}
-
-/// Parity with `src/lib/format.ts:10` — `fmtBytes`.
-fn fmt_bytes_pretty(b: u64) -> String {
-    if b >= 1_073_741_824 {
-        format!("{:.1} GB", b as f64 / 1_073_741_824.0)
-    } else if b >= 1_048_576 {
-        format!("{:.1} MB", b as f64 / 1_048_576.0)
-    } else if b >= 1_024 {
-        format!("{:.0} KB", b as f64 / 1_024.0)
-    } else {
-        format!("{} B", b)
-    }
-}
-
-/// Convert a target throughput (MB/s) into robocopy's `/IPG` inter-packet gap
-/// in milliseconds. Robocopy moves data in 64 KB blocks, so blocks/sec = MB/s * 16
-/// and the gap between blocks is 1000 / (MB/s * 16) = 62.5 / MB/s ms (min 1).
-/// Returns None for 0 (unlimited).
-fn ipg_for_throttle(mb_per_sec: u32) -> Option<u64> {
-    if mb_per_sec == 0 {
-        None
-    } else {
-        Some(((62.5 / mb_per_sec as f64).round() as u64).max(1))
-    }
+    Ok(preflight::health_mbps(&path))
 }
 
 fn basename(path: &str) -> String {
     path.replace('\\', "/").split('/').rfind(|s| !s.is_empty()).unwrap_or(path).to_string()
 }
 
-/// Extract the drive letter (e.g. "C:") from a path, or empty string.
-fn extract_drive(path: &str) -> String {
-    std::path::Path::new(path)
-        .components()
-        .next()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
-        .unwrap_or_default()
-}
-
-/// Returns true if the given path is on a removable (USB) drive.
-/// Heuristic: D-Z are often USB/external — treat as USB for Auto 2-lane if not C.
-fn is_path_on_usb(path: &str) -> bool {
-    let drive = extract_drive(path);
-    if drive.is_empty() {
-        return false;
-    }
-    if is_removable_drive(&drive) {
-        return true;
-    }
-    matches!(drive.chars().next(), Some(c) if matches!(c, 'D'..='Z' | 'd'..='z'))
-}
-
 /// Translate robocopy exit codes to human-readable messages.
-/// Codes 0-7 are success/info. 8+ are real failures. See `robocopy /?` bitmask:
-/// 1=files copied, 2=extra files, 4=mismatched, 8=failed, 16=serious error.
-fn robocopy_exit_message(code: i32) -> Option<String> {
+pub(crate) fn robocopy_exit_message(code: i32) -> Option<String> {
     match code {
         0..=7 => None, // success
         8 => Some(
@@ -867,107 +637,7 @@ pub(crate) fn parse_line(raw: &str) -> RoboLine {
     RoboLine::Skip
 }
 
-// — Scan pass -----------------------------------------------------------------
-
-fn scan(source: &str, destination: &str, mode: &str) -> (u64, u32) {
-    let is_sync = mode == "sync";
-    let mut args = vec![
-        source.to_string(),
-        destination.to_string(),
-        "/L".to_string(),
-        "/E".to_string(),
-        "/BYTES".to_string(),
-        "/NJH".to_string(),
-        "/NJS".to_string(),
-        "/NP".to_string(),
-    ];
-    if is_sync {
-        args.push("/MIR".to_string());
-    }
-    let out = match robocopy_cmd().args(&args).output() {
-        Ok(o) => o,
-        Err(_) => return (0, 0),
-    };
-
-    let mut total_bytes = 0u64;
-    let mut total_files = 0u32;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        match parse_line(line) {
-            RoboLine::FileHeader { size, is_error: false, .. } => {
-                total_bytes += size;
-                total_files += 1;
-            }
-            RoboLine::Extra { size, .. } if is_sync => {
-                // For Sync, deletions are work too — count them so progress moves
-                // during the delete phase instead of sticking at 0%.
-                total_bytes = total_bytes.saturating_add(size);
-                total_files += 1;
-            }
-            _ => {}
-        }
-    }
-    (total_bytes, total_files)
-}
-
-// — Verify pass ---------------------------------------------------------------
-//
-// Robocopy has no content-hash verification, so "verify" re-runs a list-only
-// (/L) comparison of source vs destination and counts how many files robocopy
-// would still copy. After a clean copy that count should be zero — every file
-// is present in the destination with a matching size and timestamp. Any non-zero
-// result means a file is missing or differs (a size/timestamp mismatch).
-//
-// This is a structural verification (existence + size + time), not a byte-for-byte
-// hash check.
-fn verify_transfer(source: &str, destination: &str) -> u32 {
-    let out = match robocopy_cmd()
-        .args([source, destination, "/L", "/E", "/BYTES", "/NJH", "/NJS", "/NP"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return 0,
-    };
-
-    // A file robocopy would still copy = not identical in the destination.
-    // (File rows the parser couldn't classify, e.g. localized status words,
-    // are treated as copies — see parse_line.)
-    let mut mismatches = 0u32;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let RoboLine::FileHeader { is_same: false, is_error: false, .. } = parse_line(line) {
-            mismatches += 1;
-        }
-    }
-
-    // Robocopy's own exit code is the authoritative signal: 0 = nothing would
-    // be copied (identical trees), anything else = the comparison was unable to
-    // prove the trees identical (files differ, or the verify pass itself errored
-    // with an 8+ code). Backs up the parser on non-English systems so verify can
-    // never report a false "all clear". A missing exit code (killed) is treated as failure.
-    let code = out.status.code();
-    match code {
-        Some(0) => 0,
-        Some(_) => mismatches.max(1),
-        None => mismatches.max(1),
-    }
-}
-
 // — Main transfer command -----------------------------------------------------
-
-fn parse_filter(filter: Option<&str>) -> Vec<String> {
-    let Some(s) = filter else { return vec![] };
-    let mut out = Vec::new();
-    for part in s.split([';', ',', ' ']) {
-        let t = part.trim();
-        if t.is_empty() || t.len() > 100 || t.contains("..") || t.contains('\\') {
-            continue;
-        }
-        out.push(t.to_string());
-        if out.len() >= 20 {
-            break;
-        }
-    }
-    out
-}
 
 #[tauri::command]
 async fn warp_file_op(
@@ -1004,181 +674,6 @@ async fn warp_file_op(
     })
     .await
     .map_err(|e| format!("Transfer task failed: {e}"))?
-}
-
-// — Shared preflight helpers (used by BOTH engines) --------------------------
-
-/// Destination path resolution.
-///
-/// folder_mode = "into":  source=C:\Photos\Screenshots, dest=C:\Backup
-///   -> robocopy copies INTO C:\Backup\Screenshots\
-///   BUT only if dest does NOT already end with the source folder name.
-///   If user drops C:\Backup\Screenshots as dest (already the right folder),
-///   do NOT append again -> avoid C:\Backup\Screenshots\Screenshots
-///
-/// folder_mode = "merge": copy contents directly into dest, no subfolder.
-fn resolve_effective_dest(source: &str, destination: &str, folder_mode: &str) -> String {
-    let source_name =
-        std::path::Path::new(source).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-
-    if source_name.is_empty() || folder_mode == "merge" {
-        // Merge mode: copy contents straight into destination
-        destination.to_string()
-    } else {
-        // "Into" mode: append source folder name — but only if the destination
-        // doesn't already end with that name (prevents double-nesting).
-        let dest_clean = destination.trim_end_matches('\\');
-        let dest_last =
-            std::path::Path::new(dest_clean).file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        if dest_last.eq_ignore_ascii_case(&source_name) {
-            // Destination already IS the target folder (e.g. user dropped Screenshots onto Screenshots)
-            destination.to_string()
-        } else {
-            format!("{}\\{}", dest_clean, source_name)
-        }
-    }
-}
-
-/// Overlapping path guard (prevent copying a folder into itself).
-/// Canonicalizes existing paths to defeat `C:\a\..\a` and junction bypasses.
-fn check_overlap(source: &str, effective_dest: &str) -> Result<(), String> {
-    fn norm(p: &str) -> String {
-        p.replace('\\', "/").trim_end_matches('/').to_lowercase()
-    }
-    fn canonical_norm(p: &str) -> String {
-        let long = to_long_path(p);
-        if let Ok(canon) = std::fs::canonicalize(&long) {
-            let s = canon.to_string_lossy().to_string();
-            let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
-            let s = if let Some(stripped) = s.strip_prefix(r"UNC\") {
-                format!(r"\\{}", stripped)
-            } else {
-                s.to_string()
-            };
-            return s.replace('\\', "/").trim_end_matches('/').to_lowercase();
-        }
-        // For not-yet-existing dest, canonicalize parent
-        if let Some(parent) = std::path::Path::new(p).parent().and_then(|p| p.to_str()) {
-            if !parent.is_empty() {
-                if let Ok(canon_parent) = std::fs::canonicalize(to_long_path(parent)) {
-                    let parent_str = canon_parent.to_string_lossy().to_string();
-                    let parent_str = parent_str.strip_prefix(r"\\?\").unwrap_or(&parent_str);
-                    let parent_str = if let Some(stripped) = parent_str.strip_prefix(r"UNC\") {
-                        format!(r"\\{}", stripped)
-                    } else {
-                        parent_str.to_string()
-                    };
-                    if let Some(name) = std::path::Path::new(p).file_name().and_then(|n| n.to_str())
-                    {
-                        let joined = format!(
-                            "{}/{}",
-                            parent_str.replace('\\', "/").trim_end_matches('/'),
-                            name
-                        );
-                        return joined.to_lowercase();
-                    }
-                }
-            }
-        }
-        norm(p)
-    }
-    let a = canonical_norm(source);
-    let b = canonical_norm(effective_dest);
-    if !a.is_empty() && !b.is_empty() {
-        if a == b {
-            log_event("blocked: same folder");
-            return Err(
-                "Source and destination are the same folder — choose a different destination."
-                    .to_string(),
-            );
-        }
-        if b.starts_with(&format!("{}/", a)) {
-            log_event("blocked: dest inside source");
-            return Err(
-                "Destination is inside the source — copying would recurse into itself.".to_string()
-            );
-        }
-        if a.starts_with(&format!("{}/", b)) {
-            log_event("blocked: source inside dest");
-            return Err(
-                "Source is inside the destination — this may cause infinite recursion.".to_string()
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Network share reachability preflight.
-fn check_network_dest(effective_dest: &str) -> Result<(), String> {
-    if effective_dest.starts_with(r"\\") {
-        let parts: Vec<&str> = effective_dest.split('\\').filter(|s| !s.is_empty()).collect();
-        if parts.len() >= 2 {
-            let share_root = format!(r"\\{}\{}", parts[0], parts[1]);
-            if std::fs::metadata(to_long_path(&share_root)).is_err() {
-                log_event(&format!("blocked: network unreachable {}", share_root));
-                return Err(format!(
-                    "Network path not reachable: {} — check connection, VPN, and credentials. The share may be offline.",
-                    share_root
-                ));
-            }
-        } else if std::fs::metadata(to_long_path(effective_dest)).is_err() {
-            log_event(&format!("blocked: network unreachable {}", effective_dest));
-            return Err(format!(
-                "Network path not reachable: {} — check connection and credentials.",
-                effective_dest
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// FAT32 per-file limit preflight (4 GiB - 1).
-fn check_fat32_source(source: &str, effective_dest: &str) -> Result<(), String> {
-    if is_fat32_volume(effective_dest) {
-        let max = max_file_size(source);
-        if max > 4_294_967_295 {
-            log_event(&format!("blocked: FAT32 limit max={}", max));
-            return Err(format!(
-                "Destination is FAT32 — cannot store files larger than 4 GB (found {}). Reformat the drive to NTFS or exFAT or choose another destination.",
-                fmt_bytes_pretty(max)
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Free space preflight — requires `total_bytes` plus 100 MB headroom.
-fn ensure_free_space(
-    destination: &str,
-    effective_dest: &str,
-    total_bytes: u64,
-) -> Result<(), String> {
-    if total_bytes == 0 {
-        return Ok(());
-    }
-    if let Some(free) = free_bytes_available(effective_dest)
-        .or_else(|| free_bytes_available(destination))
-        .or_else(|| {
-            let d = extract_drive(effective_dest);
-            if d.is_empty() {
-                None
-            } else {
-                free_bytes_available(&format!(r"{}\", d.trim_end_matches(':')))
-            }
-        })
-    {
-        let need = total_bytes.saturating_add(100 * 1024 * 1024);
-        if free < need {
-            log_event(&format!("blocked: no space need={} free={}", need, free));
-            return Err(format!(
-                "Not enough free space on destination: need {} but only {} available. Free up space or choose another drive.",
-                fmt_bytes_pretty(need),
-                fmt_bytes_pretty(free)
-            ));
-        }
-    }
-    Ok(())
 }
 
 // — Engine selection ----------------------------------------------------------
@@ -1224,7 +719,7 @@ fn run_transfer(
     let control = app.state::<TransferControl>();
     control.reset_job();
 
-    let effective_dest = resolve_effective_dest(&source, &destination, &folder_mode);
+    let effective_dest = preflight::resolve_effective_dest(&source, &destination, &folder_mode);
 
     log_json(
         "info",
@@ -1241,15 +736,15 @@ fn run_transfer(
         }),
     );
 
-    check_overlap(&source, &effective_dest)?;
-    check_network_dest(&effective_dest)?;
-    check_fat32_source(&source, &effective_dest)?;
+    preflight::check_overlap(&source, &effective_dest)?;
+    preflight::check_network_dest(&effective_dest)?;
+    preflight::check_fat32_source(&source, &effective_dest)?;
 
     let (quick_bytes, quick_files) = dir_stats(&source);
     let top_dirs = shards::top_level_dir_count(&source);
 
     let is_network = source.starts_with(r"\\") || effective_dest.starts_with(r"\\");
-    let is_usb = is_path_on_usb(&source) || is_path_on_usb(&effective_dest);
+    let is_usb = preflight::is_path_on_usb(&source) || preflight::is_path_on_usb(&effective_dest);
 
     let mut engine_workers =
         if should_attempt_parallel(workers, &mode, throttle, quick_files, quick_bytes, top_dirs) {
@@ -1268,7 +763,7 @@ fn run_transfer(
         };
 
     // Disk health: if dest is a slow SD/SMR (<10 MB/s) and Auto, cap at 2 lanes
-    if let Some(mbps) = health_mbps(&effective_dest) {
+    if let Some(mbps) = preflight::health_mbps(&effective_dest) {
         if mbps < 10.0 && workers.unwrap_or(0) == 0 && engine_workers > 2 {
             log_json(
                 "info",
@@ -1293,12 +788,12 @@ fn run_transfer(
             throttle,
             verify,
             engine_workers,
-            filter.clone(),
+            filter,
             quick_bytes,
             quick_files,
         )?
     } else {
-        warp_file_op_sync(
+        engine_seq::warp_file_op_sync(
             window,
             &control,
             source,
@@ -1308,7 +803,7 @@ fn run_transfer(
             conflict,
             throttle,
             verify,
-            filter.clone(),
+            filter,
             quick_bytes,
             quick_files as u32,
             workers,
@@ -1317,554 +812,6 @@ fn run_transfer(
 
     control.reset_job(); // leave flags clean for the next job
     Ok(summary)
-}
-
-/// The sequential transfer pipeline (scan -> copy -> verify). Runs on the
-/// blocking thread pool via `spawn_blocking` — see `warp_file_op`. Preflights
-/// and destination resolution already ran in `run_transfer`.
-fn warp_file_op_sync(
-    window: Window,
-    control: &TransferControl,
-    source: String,
-    destination: String,
-    effective_dest: String,
-    mode: String,
-    conflict: String,
-    throttle: u32, // target MB/s, 0 = unlimited
-    verify: bool,  // run a verification pass after a successful transfer
-    filter: Option<String>,
-    quick_bytes: u64,
-    quick_files: u32,
-    workers: Option<u8>,
-) -> Result<WarpSummary, String> {
-    // For sync mode, count deletions; for copy/move, reuse the ultra-fast Win32 kernel scan
-    // to bypass the 2-second robocopy /L dry-run process entirely.
-    let (mut total_bytes, total_files_scan) = if mode == "sync" {
-        scan(&source, &effective_dest, &mode)
-    } else {
-        (quick_bytes, quick_files)
-    };
-    let indeterminate = total_bytes == 0; // empty folder or all zero-byte files
-
-    ensure_free_space(&destination, &effective_dest, total_bytes)?;
-
-    let mut args = vec![source.clone(), effective_dest.clone()];
-
-    match mode.as_str() {
-        "move" => args.push("/MOVE".to_string()),
-        "sync" => args.push("/MIR".to_string()),
-        _ => {}
-    }
-
-    if conflict == "skip" {
-        args.push("/XO".to_string());
-        args.push("/XN".to_string());
-    }
-
-    args.extend([
-        "/E".to_string(),
-        "/NP".to_string(),
-        "/R:1".to_string(),
-        "/W:1".to_string(),
-        "/BYTES".to_string(),
-        "/NJH".to_string(),
-        "/NJS".to_string(),
-        "/256".to_string(),      // support paths longer than 260 chars (fix #3)
-        "/XJ".to_string(),       // exclude junctions (prevent loops, matches walk_dir symlink skip)
-        "/XJD".to_string(),      // exclude junction dirs
-        "/COPY:DAT".to_string(), // explicit data+attributes+timestamps (default, but explicit for clarity)
-    ]);
-
-    for pat in parse_filter(filter.as_deref()) {
-        args.push("/XF".to_string());
-        args.push(pat.clone());
-        args.push("/XD".to_string());
-        args.push(pat);
-    }
-
-    // Bandwidth throttle via inter-packet gap (/IPG). Robocopy moves data in
-    // 64 KB blocks; an N ms gap between blocks caps throughput. /IPG is applied
-    // per thread, so disable multithreading when throttling to keep the cap
-    // accurate; otherwise use multi-threaded mode.
-    //
-    // USB auto-tuning: removable drives have limited IO queues. Reduce threads
-    // (4 instead of 32) and enable restartable mode (/Z) for resilience against
-    // unexpected disconnects. For large files (>1 GB) also use /Z for pause/resume
-    // even on non-USB (restartable at cost of a bit of throughput).
-    let is_usb_source = is_path_on_usb(&source);
-    let is_usb_dest = is_path_on_usb(&effective_dest);
-    let is_usb = is_usb_source || is_usb_dest;
-    let is_large = total_bytes > 1_073_741_824; // 1 GiB
-
-    if let Some(ipg) = ipg_for_throttle(throttle) {
-        // Throttle accuracy: for high caps (>=25 MB/s) use 4 threads with half IPG per thread
-        // to keep NVMe throughput while still capping. For low caps, single thread is more accurate.
-        if throttle >= 25 {
-            let per_thread_ipg = (ipg / 2).max(1);
-            args.push(format!("/IPG:{}", per_thread_ipg));
-            args.push("/MT:4".to_string());
-        } else {
-            args.push(format!("/IPG:{ipg}"));
-            // single-threaded for precise low caps
-        }
-        // Throttling + large file: also add /Z for resume (with single thread it's safe)
-        if is_large && throttle < 25 {
-            args.push("/Z".to_string());
-        }
-    } else if is_usb {
-        // USB: fewer threads to avoid overwhelming the controller, plus
-        // restartable mode (/Z) so a copy interrupted by an unplugged drive
-        // resumes from where it left off instead of restarting the whole file.
-        args.push("/MT:4".to_string());
-        args.push("/Z".to_string());
-    } else if is_large {
-        // Large dataset (>1 GiB) on internal drive: use unbuffered I/O (/J) to avoid cache thrashing
-        let mt = match workers {
-            Some(w) if w >= 8 => 128,
-            Some(w) if w >= 4 => 64,
-            Some(w) if w >= 2 => 32,
-            _ => 32,
-        };
-        args.push(format!("/MT:{}", mt));
-        args.push("/J".to_string());
-    } else {
-        // Small/medium dataset: keep buffered I/O to leverage Windows RAM cache for fast file creation
-        let mt = match workers {
-            Some(w) if w >= 8 => 128,
-            Some(w) if w >= 4 => 64,
-            Some(w) if w >= 2 => 32,
-            _ => 64,
-        };
-        args.push(format!("/MT:{}", mt));
-    }
-
-    // Spawn
-    let mut child =
-        robocopy_cmd().args(&args).spawn().map_err(|e| format!("Failed to start robocopy: {e}"))?;
-
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    control.register(SEQ_CHILD_ID, child);
-
-    // Stderr reader — robocopy occasionally writes errors to stderr; surface them
-    if let Some(stderr) = stderr {
-        let win2 = window.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().flatten() {
-                let t = line.trim().to_string();
-                if !t.is_empty() {
-                    let _ = win2.emit("warp-error", t.clone());
-                    log_event(&format!("robocopy stderr: {}", t));
-                }
-            }
-        });
-    }
-
-    let start = Instant::now();
-    let mut summary = WarpSummary {
-        total_files: 0,
-        transferred: 0,
-        skipped: 0,
-        failed: 0,
-        duration_ms: 0,
-        bytes_transferred: 0,
-        cancelled: false,
-        error_code: 0,
-        error_message: String::new(),
-        verified: false,
-        verify_mismatches: 0,
-        workers_used: workers.unwrap_or(0).max(1) as u32,
-        retried_ok: 0,
-    };
-
-    let mut bytes_done: u64 = 0;
-    let mut last_emitted: u32 = 0;
-    let mut last_speed_str = String::new();
-    let mut last_bps: u64 = 0;
-    let mut files_done_count: u32 = 0;
-
-    // Live speed tracking with EWMA smoothing for large files
-    let mut speed_window_bytes: u64 = 0;
-    let mut speed_window_start = Instant::now();
-
-    // For indeterminate mode: emit a "pulse" every N files so UI shows activity
-    let mut indeterminate_tick: u32 = 0;
-    let mut last_emit_time = Instant::now();
-
-    // Pending large-file tracking: Some((size, before_bytes, name, last_percent))
-    // Large files (>=10 MB) are not counted immediately; we track via Percent lines for smooth progress.
-    let mut pending_large: Option<(u64, u64, String, f64)> = None;
-    const LARGE_THRESHOLD: u64 = 10 * 1024 * 1024;
-
-    // Helper to finalize pending large file (call on next file or at end)
-    let finalize_pending =
-        |bytes_done: &mut u64,
-         summary: &mut WarpSummary,
-         total_bytes: &mut u64,
-         pending: &mut Option<(u64, u64, String, f64)>| {
-            if let Some((sz, before, _name, _pct)) = pending.take() {
-                let new_done = before.saturating_add(sz);
-                // Drift fix: if scan underestimated (files changed), expand total
-                if new_done > *total_bytes && *total_bytes > 0 {
-                    *total_bytes = new_done;
-                }
-                *bytes_done = new_done;
-                summary.bytes_transferred = *bytes_done;
-            }
-        };
-
-    if let Some(stdout) = stdout {
-        for line in BufReader::new(stdout).lines().flatten() {
-            // Cancelled check — poison-safe.
-            if control.is_cancelled() {
-                summary.cancelled = true;
-                break;
-            }
-
-            match parse_line(&line) {
-                RoboLine::FileHeader { is_same, is_error, size, name } => {
-                    // Finalize previous large file if any
-                    finalize_pending(
-                        &mut bytes_done,
-                        &mut summary,
-                        &mut total_bytes,
-                        &mut pending_large,
-                    );
-
-                    if is_error {
-                        summary.failed += 1;
-                        let _ = window.emit("warp-error", name.clone());
-                    } else if is_same {
-                        summary.skipped += 1;
-                    } else {
-                        summary.transferred += 1;
-                    }
-                    summary.total_files += 1;
-                    files_done_count += 1;
-
-                    // For indeterminate or small files, count immediately.
-                    // For large transferred files, defer counting and track via Percent.
-                    let is_large_transfer =
-                        !is_same && !is_error && !indeterminate && size >= LARGE_THRESHOLD;
-                    if is_large_transfer {
-                        pending_large = Some((size, bytes_done, name.clone(), 0.0));
-                        // Emit at 0% for this file so UI shows file name immediately
-                        let pct = overall_pct(bytes_done, total_bytes);
-                        if pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150 {
-                            last_emitted = pct;
-                            last_emit_time = Instant::now();
-                            let _ = window.emit(
-                                "warp-progress",
-                                WarpProgress {
-                                    percentage: pct,
-                                    current_file: name.clone(),
-                                    speed: last_speed_str.clone(),
-                                    files_done: files_done_count,
-                                    files_total: total_files_scan,
-                                    indeterminate,
-                                    bytes_per_sec: last_bps,
-                                    bytes_done,
-                                    total_bytes,
-                                    active_workers: 1,
-                                    shards_done: 0,
-                                    shards_total: 0,
-                                },
-                            );
-                        }
-                    } else {
-                        bytes_done = bytes_done.saturating_add(size);
-                        if bytes_done > total_bytes && total_bytes > 0 {
-                            total_bytes = bytes_done;
-                        }
-                        summary.bytes_transferred = bytes_done;
-
-                        // Live speed (EWMA)
-                        speed_window_bytes = speed_window_bytes.saturating_add(size);
-                        let window_ms = speed_window_start.elapsed().as_millis() as u64;
-                        if window_ms >= 400 {
-                            let instant_bps =
-                                (speed_window_bytes as f64 / window_ms as f64 * 1000.0) as u64;
-                            if instant_bps > 0 {
-                                last_bps = if last_bps == 0 {
-                                    instant_bps
-                                } else {
-                                    (last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64
-                                };
-                                last_speed_str = fmt_speed(last_bps);
-                            }
-                            speed_window_bytes = 0;
-                            speed_window_start = Instant::now();
-                        }
-
-                        let pct = if indeterminate {
-                            indeterminate_tick = (indeterminate_tick + 1) % 100;
-                            indeterminate_tick
-                        } else {
-                            overall_pct(bytes_done, total_bytes)
-                        };
-
-                        let should_emit =
-                            pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150;
-                        if should_emit {
-                            last_emitted = pct;
-                            last_emit_time = Instant::now();
-                            let _ = window.emit(
-                                "warp-progress",
-                                WarpProgress {
-                                    percentage: pct,
-                                    current_file: name,
-                                    speed: last_speed_str.clone(),
-                                    files_done: files_done_count,
-                                    files_total: total_files_scan,
-                                    indeterminate,
-                                    bytes_per_sec: last_bps,
-                                    bytes_done,
-                                    total_bytes,
-                                    active_workers: 1,
-                                    shards_done: 0,
-                                    shards_total: 0,
-                                },
-                            );
-                        }
-                    }
-                }
-
-                RoboLine::Extra { size, name } => {
-                    // Sync deletes (*EXTRA) — previously skipped, which left Sync
-                    // stuck at 0% when the job was mostly deletions (empty source).
-                    // Treat each delete as work: advance files/bytes and emit so
-                    // the UI stays live. For non-sync this is rare (extra files
-                    // exist but aren't deleted), but still show activity.
-                    finalize_pending(
-                        &mut bytes_done,
-                        &mut summary,
-                        &mut total_bytes,
-                        &mut pending_large,
-                    );
-                    summary.total_files += 1;
-                    files_done_count += 1;
-                    // Count toward bytes so overall_pct moves during delete phase.
-                    // For non-sync bytes are irrelevant (nothing is deleted) but
-                    // counting keeps the math consistent with scan() which added
-                    // Extra sizes for sync.
-                    bytes_done = bytes_done.saturating_add(size);
-                    if bytes_done > total_bytes && total_bytes > 0 {
-                        total_bytes = bytes_done;
-                    }
-                    summary.bytes_transferred = bytes_done;
-                    speed_window_bytes = speed_window_bytes.saturating_add(size);
-                    let window_ms = speed_window_start.elapsed().as_millis() as u64;
-                    if window_ms >= 400 {
-                        let instant_bps =
-                            (speed_window_bytes as f64 / window_ms as f64 * 1000.0) as u64;
-                        if instant_bps > 0 {
-                            last_bps = if last_bps == 0 {
-                                instant_bps
-                            } else {
-                                (last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64
-                            };
-                            last_speed_str = fmt_speed(last_bps);
-                        }
-                        speed_window_bytes = 0;
-                        speed_window_start = Instant::now();
-                    }
-                    let pct = if indeterminate {
-                        indeterminate_tick = (indeterminate_tick + 1) % 100;
-                        indeterminate_tick
-                    } else {
-                        overall_pct(bytes_done, total_bytes)
-                    };
-                    let should_emit =
-                        pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150;
-                    if should_emit {
-                        last_emitted = pct;
-                        last_emit_time = Instant::now();
-                        let _ = window.emit(
-                            "warp-progress",
-                            WarpProgress {
-                                percentage: pct,
-                                current_file: format!("Deleting {}", name),
-                                speed: last_speed_str.clone(),
-                                files_done: files_done_count,
-                                files_total: total_files_scan,
-                                indeterminate,
-                                bytes_per_sec: last_bps,
-                                bytes_done,
-                                total_bytes,
-                                active_workers: 1,
-                                shards_done: 0,
-                                shards_total: 0,
-                            },
-                        );
-                    }
-                }
-
-                RoboLine::Percent(p) => {
-                    if let Some(pending) = pending_large.as_mut() {
-                        let sz = pending.0;
-                        let before = pending.1;
-                        let name = pending.2.clone();
-                        let last_p = &mut pending.3;
-                        // Clamp and ensure monotonic
-                        let p_clamped = p.clamp(0.0, 100.0);
-                        if p_clamped < *last_p {
-                            // Robocopy may reset for next file without header; ignore regression
-                        } else {
-                            *last_p = p_clamped;
-                            let est = before.saturating_add((sz as f64 * p_clamped / 100.0) as u64);
-                            // Speed incremental
-                            let delta = est.saturating_sub(bytes_done);
-                            if delta > 0 {
-                                speed_window_bytes = speed_window_bytes.saturating_add(delta);
-                                let window_ms = speed_window_start.elapsed().as_millis() as u64;
-                                if window_ms >= 400 {
-                                    let instant_bps = (speed_window_bytes as f64 / window_ms as f64
-                                        * 1000.0)
-                                        as u64;
-                                    if instant_bps > 0 {
-                                        last_bps = if last_bps == 0 {
-                                            instant_bps
-                                        } else {
-                                            (last_bps as f64 * 0.7 + instant_bps as f64 * 0.3)
-                                                as u64
-                                        };
-                                        last_speed_str = fmt_speed(last_bps);
-                                    }
-                                    speed_window_bytes = 0;
-                                    speed_window_start = Instant::now();
-                                }
-                            }
-                            bytes_done = est;
-                            if bytes_done > total_bytes && total_bytes > 0 {
-                                total_bytes = bytes_done;
-                            }
-                            summary.bytes_transferred = bytes_done;
-                            let pct = if indeterminate {
-                                indeterminate_tick
-                            } else {
-                                overall_pct(bytes_done, total_bytes)
-                            };
-                            // Throttle but ensure large file feels smooth (emit at least every 100ms)
-                            let should_emit =
-                                pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150;
-                            if should_emit {
-                                last_emitted = pct;
-                                last_emit_time = Instant::now();
-                                let _ = window.emit(
-                                    "warp-progress",
-                                    WarpProgress {
-                                        percentage: pct,
-                                        current_file: name.clone(),
-                                        speed: last_speed_str.clone(),
-                                        files_done: files_done_count,
-                                        files_total: total_files_scan,
-                                        indeterminate,
-                                        bytes_per_sec: last_bps,
-                                        bytes_done,
-                                        total_bytes,
-                                        active_workers: 1,
-                                        shards_done: 0,
-                                        shards_total: 0,
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-
-                RoboLine::Speed(bps) => {
-                    if last_speed_str.is_empty() {
-                        last_speed_str = fmt_speed(bps);
-                    }
-                }
-
-                RoboLine::Skip => {}
-            }
-        }
-        // Finalize any remaining large file at end of stream
-        finalize_pending(&mut bytes_done, &mut summary, &mut total_bytes, &mut pending_large);
-    }
-
-    // Get exit code — distinguish signal termination (code == None) from success.
-    let (code, was_terminated_without_code) = match control.take(SEQ_CHILD_ID) {
-        Some(ref mut child) => match child.wait() {
-            Ok(status) => match status.code() {
-                Some(v) => (v, false),
-                None => (-1, true), // killed by signal / no exit code
-            },
-            Err(_) => (-1, true),
-        },
-        // Already cancelled and cleared by `cancel_warp`
-        None => (0, false),
-    };
-
-    summary.duration_ms = start.elapsed().as_millis() as u64;
-    summary.error_code = code;
-
-    if summary.cancelled {
-        log_event(&format!(
-            "cancelled after {} ms, {}/{} files, {} bytes",
-            summary.duration_ms,
-            summary.transferred,
-            summary.total_files,
-            summary.bytes_transferred
-        ));
-        return Ok(summary);
-    }
-
-    if was_terminated_without_code {
-        summary.error_message =
-            "Transfer terminated unexpectedly (no exit code — process was killed)".to_string();
-        log_event("terminated without exit code");
-        return Ok(summary);
-    }
-
-    if code < 8 {
-        log_event(&format!(
-            "success code={} transferred={} skipped={} failed={} bytes={} verified={}",
-            code,
-            summary.transferred,
-            summary.skipped,
-            summary.failed,
-            summary.bytes_transferred,
-            summary.verified
-        ));
-        // For move mode: robocopy /MOVE removes the files it moves but leaves
-        // empty source directories behind. Clean up ONLY empty directories.
-        //
-        // IMPORTANT: We must never blindly `remove_dir_all(&source)` here. In
-        // skip-conflict mode (/XO /XN) some files are intentionally NOT moved
-        // and remain in the source. A recursive delete would destroy those
-        // files (data loss). `remove_empty_dirs` preserves any directory that
-        // still contains files.
-        if mode == "move" && summary.failed == 0 && !summary.cancelled {
-            trash::log_trash(&mode, &source, &effective_dest, vec![]);
-            remove_empty_dirs(std::path::Path::new(&source));
-        }
-        if mode == "sync" && summary.failed == 0 && !summary.cancelled {
-            trash::log_trash(&mode, &source, &effective_dest, vec![]);
-        }
-
-        // Optional verification pass. Skipped for "move" (the source is gone,
-        // so there's nothing left to compare against) and when files failed.
-        if verify && mode != "move" && summary.failed == 0 {
-            // Tell the UI we're now verifying (the transfer itself is done but
-            // the command hasn't returned yet — this can take a while).
-            let _ = window.emit("warp-verifying", ());
-            summary.verify_mismatches = verify_transfer(&source, &effective_dest);
-            summary.verified = true;
-            log_event(&format!("verify mismatches={}", summary.verify_mismatches));
-        }
-
-        Ok(summary)
-    } else {
-        // Surface a meaningful error message (#4 disk full / access denied)
-        summary.error_message = robocopy_exit_message(code)
-            .unwrap_or_else(|| format!("Transfer failed (exit code {})", code));
-        log_event(&format!("failed code={} msg={}", code, summary.error_message));
-        Ok(summary) // Return as Ok with error info, not Err — so UI gets the summary
-    }
 }
 
 // — Parallel engine -----------------------------------------------------------
@@ -2902,6 +1849,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preflight::max_file_size;
+    use crate::progress::{fmt_bytes_pretty, ipg_for_throttle};
 
     #[test]
     fn overall_pct_clamps_and_computes() {
@@ -3168,8 +2117,7 @@ mod updater_signing {
         let key_b64 = inner
             .lines()
             .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .last()
+            .rfind(|l| !l.is_empty())
             .expect("configured pubkey must contain a key line");
 
         let pk = minisign_verify::PublicKey::from_base64(key_b64)
@@ -3206,6 +2154,8 @@ mod updater_signing {
 #[cfg(all(test, windows))]
 mod real_robocopy {
     use super::*;
+    use crate::engine_seq::scan;
+    use crate::preflight::{free_bytes_available, is_removable_drive};
     use std::path::PathBuf;
 
     /// Creates a source tree with 3 files (one nested), an empty dir, and an
@@ -3261,7 +2211,7 @@ mod real_robocopy {
         let d = dst.to_string_lossy().to_string();
 
         // Do a real copy with the app's exact arguments.
-        let out = robocopy_cmd().args(&copy_args(&s, &d)).output().expect("robocopy must run");
+        let out = robocopy_cmd().args(copy_args(&s, &d)).output().expect("robocopy must run");
         let code = out.status.code().unwrap();
         assert_eq!(code, 1, "exit 1 = files copied successfully");
         assert!(dst.join("a.txt").exists());

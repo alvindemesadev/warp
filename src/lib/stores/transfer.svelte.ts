@@ -1,4 +1,4 @@
-// @ts-nocheck
+/// <reference types="svelte" />
 // Transfer store — single job state + progress. Svelte 5 runes ($state/$derived) via class.
 // Extracted from +page.svelte:32-... for Phase 2.
 
@@ -370,8 +370,8 @@ export class TransferStore {
     folderMode: FolderMode;
     throttle: number;
     verify: boolean;
-    workers?: number;
-    filter?: string;
+    workers?: number | undefined;
+    filter?: string | undefined;
   } {
     return {
       source: this.sourcePath,

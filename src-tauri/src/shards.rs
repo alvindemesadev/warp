@@ -26,6 +26,9 @@ pub struct Shard {
     pub est_files: u64,
     /// true -> copy only files directly inside `src` (`/LEV:1`), not subdirs.
     pub root_only: bool,
+    /// For flat-dir File-chunk shards (Plan B): specific files to copy.
+    /// None = directory shard (robocopy). Some = file-level chunk (direct copy).
+    pub chunk_files: Option<Vec<String>>,
 }
 
 /// Split `source` into shards targeting `effective_dest`. Returns an empty vec
@@ -39,6 +42,87 @@ pub fn partition(source: &str, effective_dest: &str) -> Vec<Shard> {
     let mut next_id = 0u64;
     let mut shards = Vec::new();
     split_dir(source, effective_dest, total_bytes, 0, &mut next_id, &mut shards);
+    for (i, s) in shards.iter_mut().enumerate() {
+        s.id = (i + 1) as u64;
+    }
+    shards
+}
+
+/// Balanced variant: Plan A (byte-balanced order) + conditional Plan B (split flat monster).
+/// `workers` is the `resolve_workers_for` result (>=1). Returns same shards as `partition`
+/// sorted largest-first, and if `max_shard > 1.5 * avg` and that shard is flat, splits it
+/// into file-chunk shards. See `docs/specs/004-balanced-sharding.md`.
+pub fn partition_balanced(source: &str, effective_dest: &str, workers: usize) -> Vec<Shard> {
+    let mut shards = partition(source, effective_dest);
+    if shards.is_empty() || workers <= 1 {
+        return shards;
+    }
+    // Plan A: largest first so queue's straggler starts early
+    shards.sort_by(|a, b| b.est_bytes.cmp(&a.est_bytes));
+
+    if shards.len() < 2 {
+        return shards;
+    }
+    let total: u64 = shards.iter().map(|s| s.est_bytes).sum();
+    if total == 0 {
+        return shards;
+    }
+    let avg = total / workers as u64;
+    if avg == 0 {
+        return shards;
+    }
+    let max = shards.iter().map(|s| s.est_bytes).max().unwrap_or(0);
+    // Trigger Plan B: 1.5 * avg
+    if max <= avg * 3 / 2 {
+        return shards;
+    }
+    let idx = shards.iter().position(|s| s.est_bytes == max).unwrap();
+    let shard = shards[idx].clone();
+    // Only flat dirs (no subdirs) with at least 2 files are candidates for file-chunk split
+    let listing = list_children(&shard.src);
+    if !listing.dirs.is_empty() || listing.files.len() < 2 {
+        return shards;
+    }
+    // k = ceil(max / avg), clamped 2..6 and <= file count
+    let mut k = ((max + avg - 1) / avg) as usize;
+    k = k.clamp(2, 6).min(listing.files.len());
+    if k < 2 {
+        return shards;
+    }
+    // Bin-pack files descending into k buckets
+    let mut files = listing.files;
+    files.sort_by(|a, b| b.size.cmp(&a.size));
+    let mut buckets: Vec<Vec<FileEntry>> = vec![Vec::new(); k];
+    let mut bucket_bytes = vec![0u64; k];
+    for f in files {
+        let min_idx = bucket_bytes.iter().enumerate().min_by_key(|(_, b)| *b).unwrap().0;
+        bucket_bytes[min_idx] += f.size;
+        buckets[min_idx].push(f);
+    }
+    let mut new_shards = Vec::new();
+    for bucket in buckets.into_iter() {
+        if bucket.is_empty() {
+            continue;
+        }
+        let bytes: u64 = bucket.iter().map(|f| f.size).sum();
+        let names: Vec<String> = bucket.into_iter().map(|f| f.name).collect();
+        let cnt = names.len() as u64;
+        new_shards.push(Shard {
+            id: 0,
+            src: shard.src.clone(),
+            dst: shard.dst.clone(),
+            est_bytes: bytes,
+            est_files: cnt,
+            root_only: false,
+            chunk_files: Some(names),
+        });
+    }
+    if new_shards.len() < 2 {
+        return shards;
+    }
+    shards.remove(idx);
+    shards.extend(new_shards);
+    shards.sort_by(|a, b| b.est_bytes.cmp(&a.est_bytes));
     for (i, s) in shards.iter_mut().enumerate() {
         s.id = (i + 1) as u64;
     }
@@ -66,6 +150,7 @@ fn split_dir(
             est_bytes: bytes,
             est_files: listing.files.len() as u64,
             root_only: true,
+            chunk_files: None,
         });
     }
 
@@ -83,6 +168,7 @@ fn split_dir(
                 est_bytes: bytes,
                 est_files: files,
                 root_only: false,
+                chunk_files: None,
             });
         }
     }
@@ -105,6 +191,7 @@ struct Entry {
     path: String,
 }
 
+#[derive(Clone)]
 struct FileEntry {
     name: String,
     #[allow(dead_code)]
@@ -173,8 +260,17 @@ mod tests {
         p
     }
 
-    /// All regular files a shard would copy, honoring root_only (/LEV:1).
+    /// All regular files a shard would copy, honoring root_only (/LEV:1) and file chunks.
     fn shard_files(s: &Shard) -> Vec<String> {
+        if let Some(files) = &s.chunk_files {
+            let mut v = Vec::new();
+            for name in files {
+                let p = std::path::Path::new(&s.src).join(name);
+                v.push(p.to_string_lossy().to_string());
+            }
+            v.sort();
+            return v;
+        }
         let mut v = Vec::new();
         let long = crate::to_long_path(&s.src);
         if s.root_only {

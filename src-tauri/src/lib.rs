@@ -1905,6 +1905,102 @@ fn run_shard(
     Ok(pool::ShardOutcome::from_local(id, &local, exit_code, had_exit_code))
 }
 
+/// Direct file-copy for flat-dir file-chunk shards (Plan B). Copies only the
+/// files listed in `shard.chunk_files` from `shard.src` to `shard.dst`.
+/// Updates the shared `Tracker` and `LocalCounters` per file, respects
+/// `control` pause/cancel, and `skip_conflict` (/XO /XN).
+fn run_file_chunk_shard(
+    control: &TransferControl,
+    shard: &shards::Shard,
+    tracker: Option<&Mutex<pool::Tracker>>,
+    sink: std::sync::Arc<dyn ShardSink>,
+    skip_conflict: bool,
+) -> Result<pool::ShardOutcome, String> {
+    let files = shard.chunk_files.as_ref().ok_or("not a file chunk")?;
+    let mut local = pool::LocalCounters::default();
+    let src_dir = std::path::Path::new(&shard.src);
+    let dst_dir = std::path::Path::new(&shard.dst);
+    // Ensure dest dir exists
+    let _ = std::fs::create_dir_all(to_long_path(&shard.dst));
+    for name in files {
+        while control.is_paused() && !control.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        if control.is_cancelled() {
+            break;
+        }
+        let src_path = src_dir.join(name);
+        let dst_path = dst_dir.join(name);
+        let src_long = to_long_path(&src_path.to_string_lossy());
+        let dst_long = to_long_path(&dst_path.to_string_lossy());
+        // Skip if filtered? Already filtered at shard creation
+        // Conflict skip: if dest exists, skip
+        if skip_conflict && std::fs::metadata(&dst_long).is_ok() {
+            local.skipped += 1;
+            local.seen += 1;
+            // Still count bytes for progress as skipped? For Skip, track as Same file (is_same)
+            if let Some(t) = tracker.as_ref() {
+                let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                let line = RoboLine::FileHeader { is_same: true, is_error: false, size: 0, name: name.clone() };
+                if let Some(p) = g.ingest(&line, Instant::now()) {
+                    drop(g);
+                    sink.progress(&p);
+                }
+            }
+            continue;
+        }
+        let meta = match std::fs::metadata(&src_long) {
+            Ok(m) => m,
+            Err(e) => {
+                local.failed += 1;
+                local.seen += 1;
+                sink.error_line(&format!("{} — file not found: {}", name, e));
+                if let Some(t) = tracker.as_ref() {
+                    let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                    let line = RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name: name.clone() };
+                    if let Some(p) = g.ingest(&line, Instant::now()) {
+                        drop(g);
+                        sink.progress(&p);
+                    }
+                }
+                continue;
+            }
+        };
+        let size = meta.len();
+        match std::fs::copy(&src_long, &dst_long) {
+            Ok(_) => {
+                local.transferred += 1;
+                local.seen += 1;
+                local.counted_bytes = local.counted_bytes.saturating_add(size);
+                if let Some(t) = tracker.as_ref() {
+                    let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                    let line = RoboLine::FileHeader { is_same: false, is_error: false, size, name: name.clone() };
+                    if let Some(p) = g.ingest(&line, Instant::now()) {
+                        drop(g);
+                        sink.progress(&p);
+                    }
+                }
+            }
+            Err(e) => {
+                local.failed += 1;
+                local.seen += 1;
+                sink.error_line(&format!("{} — copy failed: {}", name, e));
+                if let Some(t) = tracker.as_ref() {
+                    let mut g = t.lock().unwrap_or_else(|e| e.into_inner());
+                    let line = RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name: name.clone() };
+                    if let Some(p) = g.ingest(&line, Instant::now()) {
+                        drop(g);
+                        sink.progress(&p);
+                    }
+                }
+            }
+        }
+    }
+    let exit_code = if local.failed > 0 { 8 } else { 0 };
+    let had_exit_code = true;
+    Ok(pool::ShardOutcome::from_local(shard.id, &local, exit_code, had_exit_code))
+}
+
 // — Sync two-phase helpers (delete -> copy, same workers reused) -------------
 
 struct ExtraFile {
@@ -2094,7 +2190,7 @@ fn transfer_parallel(
 ) -> Result<WarpSummary, String> {
     let start = Instant::now();
 
-    let shard_list = shards::partition(source, effective_dest);
+    let mut shard_list = shards::partition(source, effective_dest);
     if shard_list.len() < 2 {
         // Nothing to parallelize after all — fall through to the proven
         // sequential engine (it re-scans and handles empty trees itself).
@@ -2110,6 +2206,24 @@ fn transfer_parallel(
             verify,
             filter.clone(),
         );
+    }
+
+    // — Balanced sharding: Plan A (largest-first) + conditional Plan B (flat monster split)
+    // Compute workers first to feed partition_balanced
+    let mut workers = workers_requested.min(shard_list.len()).max(1);
+    // Try balanced version if workers >1
+    if workers > 1 {
+        let balanced = shards::partition_balanced(source, effective_dest, workers);
+        // Use balanced if it introduces file-chunk shards or changes count (i.e., Plan B triggered)
+        let has_chunks = balanced.iter().any(|s| s.chunk_files.is_some());
+        if has_chunks || balanced.len() != shard_list.len() {
+            shard_list = balanced;
+            // Recompute workers cap after balanced (may have more shards)
+            workers = workers_requested.min(shard_list.len()).max(1);
+        } else {
+            // Even without chunk split, balanced sorts largest-first — use it for better queue order
+            shard_list = balanced;
+        }
     }
 
     // — Two-phase Sync: collect *EXTRA (dest-only) for delete phase ---------
@@ -2134,7 +2248,6 @@ fn transfer_parallel(
     ensure_free_space(destination, effective_dest, source_bytes)?;
 
     let shards_total = shard_list.len() as u32;
-    let workers = workers_requested.min(shard_list.len()).max(1);
     let usb = is_path_on_usb(source) || is_path_on_usb(effective_dest);
     let move_mode = mode == "move";
     let skip_conflict = conflict == "skip";
@@ -2145,9 +2258,11 @@ fn transfer_parallel(
     ));
 
     // Metadata kept aside BEFORE the queue consumes the shards — retries need
-    // each failed shard's src/dst/root_only back.
-    let shard_meta: HashMap<u64, (String, String, bool)> =
-        shard_list.iter().map(|s| (s.id, (s.src.clone(), s.dst.clone(), s.root_only))).collect();
+    // each failed shard's src/dst/root_only/chunk_files back.
+    let shard_meta: HashMap<u64, (String, String, bool, Option<Vec<String>>)> = shard_list
+        .iter()
+        .map(|s| (s.id, (s.src.clone(), s.dst.clone(), s.root_only, s.chunk_files.clone())))
+        .collect();
 
     let tracker =
         Mutex::new(pool::Tracker::new(total_bytes, total_files_scan, total_bytes == 0, false));
@@ -2290,22 +2405,28 @@ fn transfer_parallel(
                 }
                 let shard = lock_ok(&queue).pop_front();
                 let Some(shard) = shard else { break };
-                let args = pool::shard_args_with_filter(
-                    &shard.src,
-                    &shard.dst,
-                    skip_conflict,
-                    shard.root_only,
-                    move_mode,
-                    mt_per_worker,
-                    filter.as_deref(),
-                );
+                // File-chunk shards (Plan B flat-dir) use direct copy, not robocopy
+                let is_chunk = shard.chunk_files.is_some();
                 log_json(
                     "info",
                     "shard_start",
-                    serde_json::json!({ "id": shard.id, "src_hash": hash_path(&shard.src) }),
+                    serde_json::json!({ "id": shard.id, "src_hash": hash_path(&shard.src), "chunk": is_chunk }),
                 );
                 live_workers.fetch_add(1, Ordering::SeqCst);
-                let outcome = run_shard(control, shard.id, &args, Some(&tracker), sink.clone());
+                let outcome = if is_chunk {
+                    run_file_chunk_shard(control, &shard, Some(&tracker), sink.clone(), skip_conflict)
+                } else {
+                    let args = pool::shard_args_with_filter(
+                        &shard.src,
+                        &shard.dst,
+                        skip_conflict,
+                        shard.root_only,
+                        move_mode,
+                        mt_per_worker,
+                        filter.as_deref(),
+                    );
+                    run_shard(control, shard.id, &args, Some(&tracker), sink.clone())
+                };
                 live_workers.fetch_sub(1, Ordering::SeqCst);
                 match outcome {
                     Ok(outcome) => {
@@ -2377,7 +2498,7 @@ fn transfer_parallel(
             if prev.failed == 0 && prev.exit_code < 8 {
                 break;
             }
-            let Some((src, dst, root_only)) = shard_meta.get(&id).cloned() else { break };
+            let Some((src, dst, root_only, chunk_files)) = shard_meta.get(&id).cloned() else { break };
             log_event(&format!(
                 "retry shard {} attempt {}/{} ({} failed files)",
                 id,
@@ -2388,17 +2509,30 @@ fn transfer_parallel(
             // Roll back the failed attempt's byte contribution so the tracker
             // reflects exactly one completed pass over this shard afterwards.
             lock_ok(&tracker).revert_bytes(prev.counted_bytes);
-            let args = pool::shard_args_with_filter(
-                &src,
-                &dst,
-                skip_conflict,
-                root_only,
-                move_mode,
-                mt_per_worker,
-                filter.as_deref(),
-            );
             live_workers.fetch_add(1, Ordering::SeqCst);
-            let retried = run_shard(control, id, &args, Some(&tracker), sink.clone());
+            let retried = if let Some(files) = chunk_files {
+                let shard = shards::Shard {
+                    id,
+                    src: src.clone(),
+                    dst: dst.clone(),
+                    est_bytes: 0,
+                    est_files: files.len() as u64,
+                    root_only,
+                    chunk_files: Some(files),
+                };
+                run_file_chunk_shard(control, &shard, Some(&tracker), sink.clone(), skip_conflict)
+            } else {
+                let args = pool::shard_args_with_filter(
+                    &src,
+                    &dst,
+                    skip_conflict,
+                    root_only,
+                    move_mode,
+                    mt_per_worker,
+                    filter.as_deref(),
+                );
+                run_shard(control, id, &args, Some(&tracker), sink.clone())
+            };
             live_workers.fetch_sub(1, Ordering::SeqCst);
             match retried {
                 Ok(fresh) => {

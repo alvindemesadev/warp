@@ -2191,25 +2191,43 @@ fn transfer_parallel(
     let start = Instant::now();
 
     let mut shard_list = shards::partition(source, effective_dest);
+    // — Balanced sharding: Plan A (largest-first) + conditional Plan B (flat monster split)
+    // If only 1 shard but explicit workers >1, try to split flat monster before falling back
     if shard_list.len() < 2 {
-        // Nothing to parallelize after all — fall through to the proven
-        // sequential engine (it re-scans and handles empty trees itself).
-        return warp_file_op_sync(
-            window,
-            control,
-            source.to_string(),
-            destination.to_string(),
-            effective_dest.to_string(),
-            mode.to_string(),
-            conflict.to_string(),
-            throttle,
-            verify,
-            filter.clone(),
-        );
+        if workers_requested > 1 {
+            let try_balanced = shards::partition_balanced(source, effective_dest, workers_requested);
+            if try_balanced.len() >= 2 || try_balanced.iter().any(|s| s.chunk_files.is_some()) {
+                shard_list = try_balanced;
+            } else {
+                return warp_file_op_sync(
+                    window,
+                    control,
+                    source.to_string(),
+                    destination.to_string(),
+                    effective_dest.to_string(),
+                    mode.to_string(),
+                    conflict.to_string(),
+                    throttle,
+                    verify,
+                    filter.clone(),
+                );
+            }
+        } else {
+            return warp_file_op_sync(
+                window,
+                control,
+                source.to_string(),
+                destination.to_string(),
+                effective_dest.to_string(),
+                mode.to_string(),
+                conflict.to_string(),
+                throttle,
+                verify,
+                filter.clone(),
+            );
+        }
     }
 
-    // — Balanced sharding: Plan A (largest-first) + conditional Plan B (flat monster split)
-    // Compute workers first to feed partition_balanced
     let mut workers = workers_requested.min(shard_list.len()).max(1);
     // Try balanced version if workers >1
     if workers > 1 {

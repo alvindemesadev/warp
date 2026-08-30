@@ -16,6 +16,16 @@ pub const MAX_SPLIT_DEPTH: u32 = 2;
 const DOMINANT_PCT: u64 = 40;
 /// Never split below this size — orchestration overhead dominates otherwise.
 const MIN_SPLIT_BYTES: u64 = 512 * 1024 * 1024;
+/// Per-file overhead for cost-balanced sharding (bytes-equivalent). Tuned via bench:
+/// 1000×100KB vs 1×100MB — second is 3-4× slower, so 64KB per file approximates wall.
+const FILE_OVERHEAD: u64 = 64 * 1024;
+
+fn shard_cost(s: &Shard) -> u64 {
+    s.est_bytes.saturating_add(s.est_files.saturating_mul(FILE_OVERHEAD))
+}
+fn file_cost(f: &FileEntry) -> u64 {
+    f.size.saturating_add(FILE_OVERHEAD)
+}
 
 #[derive(Clone, Debug)]
 pub struct Shard {
@@ -57,46 +67,84 @@ pub fn partition_balanced(source: &str, effective_dest: &str, workers: usize) ->
     if shards.is_empty() || workers <= 1 {
         return shards;
     }
-    // Plan A: largest first so queue's straggler starts early
-    shards.sort_by(|a, b| b.est_bytes.cmp(&a.est_bytes));
+    // Plan A: cost-balanced — largest cost first so queue's straggler starts early
+    shards.sort_by(|a, b| shard_cost(b).cmp(&shard_cost(a)));
 
-    if shards.len() < 2 {
+    // Single-shard with many subdirs (e.g., outer Demo/source containing inner source with app/bootstrap/...)
+    // Expand into per-child shards so it can go parallel even without dominant size.
+    if shards.len() == 1 {
+        let solo = shards[0].clone();
+        let listing = list_children(&solo.src);
+        if listing.dirs.len() >= 2 {
+            let mut new_shards = Vec::new();
+            if !listing.files.is_empty() {
+                let bytes = listing.files.iter().map(|f| f.size).sum();
+                new_shards.push(Shard {
+                    id: 0,
+                    src: solo.src.clone(),
+                    dst: solo.dst.clone(),
+                    est_bytes: bytes,
+                    est_files: listing.files.len() as u64,
+                    root_only: true,
+                    chunk_files: None,
+                });
+            }
+            for child in &listing.dirs {
+                let (bytes, files) = crate::dir_stats(&child.path);
+                let child_dst = join_win(&solo.dst, &child.name);
+                new_shards.push(Shard {
+                    id: 0,
+                    src: child.path.clone(),
+                    dst: child_dst,
+                    est_bytes: bytes,
+                    est_files: files,
+                    root_only: false,
+                    chunk_files: None,
+                });
+            }
+            new_shards.sort_by(|a, b| shard_cost(b).cmp(&shard_cost(a)));
+            for (i, s) in new_shards.iter_mut().enumerate() {
+                s.id = (i + 1) as u64;
+            }
+            return new_shards;
+        }
+    }
+
+    // For both single-flat and multi-shard, check if max bucket dominates avg by COST
+    let total_cost: u64 = shards.iter().map(|s| shard_cost(s)).sum();
+    if total_cost == 0 {
         return shards;
     }
-    let total: u64 = shards.iter().map(|s| s.est_bytes).sum();
-    if total == 0 {
+    let avg_cost = total_cost / workers as u64;
+    if avg_cost == 0 {
         return shards;
     }
-    let avg = total / workers as u64;
-    if avg == 0 {
+    let max_cost = shards.iter().map(|s| shard_cost(s)).max().unwrap_or(0);
+    if max_cost <= avg_cost * 3 / 2 {
         return shards;
     }
-    let max = shards.iter().map(|s| s.est_bytes).max().unwrap_or(0);
-    // Trigger Plan B: 1.5 * avg
-    if max <= avg * 3 / 2 {
-        return shards;
-    }
-    let idx = shards.iter().position(|s| s.est_bytes == max).unwrap();
+    let idx = shards.iter().position(|s| shard_cost(s) == max_cost).unwrap();
     let shard = shards[idx].clone();
     // Only flat dirs (no subdirs) with at least 2 files are candidates for file-chunk split
     let listing = list_children(&shard.src);
     if !listing.dirs.is_empty() || listing.files.len() < 2 {
         return shards;
     }
-    // k = ceil(max / avg), clamped 2..6 and <= file count
-    let mut k = ((max + avg - 1) / avg) as usize;
+    // k = ceil(max_cost / avg_cost), clamped 2..6 and <= file count
+    let mut k = ((max_cost + avg_cost - 1) / avg_cost) as usize;
     k = k.clamp(2, 6).min(listing.files.len());
     if k < 2 {
         return shards;
     }
-    // Bin-pack files descending into k buckets
+    // Bin-pack files descending by COST into k buckets (not just bytes)
     let mut files = listing.files;
-    files.sort_by(|a, b| b.size.cmp(&a.size));
+    files.sort_by(|a, b| file_cost(b).cmp(&file_cost(a)));
     let mut buckets: Vec<Vec<FileEntry>> = vec![Vec::new(); k];
-    let mut bucket_bytes = vec![0u64; k];
+    let mut bucket_costs = vec![0u64; k];
     for f in files {
-        let min_idx = bucket_bytes.iter().enumerate().min_by_key(|(_, b)| *b).unwrap().0;
-        bucket_bytes[min_idx] += f.size;
+        let c = file_cost(&f);
+        let min_idx = bucket_costs.iter().enumerate().min_by_key(|(_, b)| *b).unwrap().0;
+        bucket_costs[min_idx] += c;
         buckets[min_idx].push(f);
     }
     let mut new_shards = Vec::new();
@@ -122,7 +170,7 @@ pub fn partition_balanced(source: &str, effective_dest: &str, workers: usize) ->
     }
     shards.remove(idx);
     shards.extend(new_shards);
-    shards.sort_by(|a, b| b.est_bytes.cmp(&a.est_bytes));
+    shards.sort_by(|a, b| shard_cost(b).cmp(&shard_cost(a)));
     for (i, s) in shards.iter_mut().enumerate() {
         s.id = (i + 1) as u64;
     }

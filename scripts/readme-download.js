@@ -28,7 +28,9 @@ const installers = [
   { file: `Warp_${version}_x64_en-US.msi`, note: "MSI installer" },
 ];
 
-console.log("Current release installers (generated locally by `npm run build:win`, not committed to git):");
+console.log(
+  "Current release installers (generated locally by `npm run build:win`, not committed to git):",
+);
 console.log("");
 console.log("| File | Size | Description |");
 console.log("|---|---|---|");

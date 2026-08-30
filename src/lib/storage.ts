@@ -1,72 +1,56 @@
 // Storage helpers with validation — never trust localStorage.
 // Corrupt JSON or old schema should not crash the app; we clear the bad key and return fallback.
 // Types live in ./types (single source of truth); re-exported for compat.
-import type { Mode, Conflict, Preset, RecentEntry, QueueJob } from "./types";
+// Phase 2.4: zod schemas + versioned persistence `{ v: 1, data: [...] }` with backwards compat.
 
-export type { Mode, Conflict, Preset, RecentEntry, QueueJob };
+import { z } from "zod";
+import type { Mode, Conflict, RecentEntry } from "./types";
 
-const VALID_MODES = new Set(["copy", "move", "sync"]);
-const VALID_CONFLICTS = new Set(["overwrite", "skip"]);
-const VALID_FOLDER = new Set(["into", "merge"]);
+export type { Mode, Conflict, RecentEntry };
 
-/** Optional parallel-worker field: absent/0 = Auto, else 2..=8. */
-function hasValidWorkers(v: unknown): boolean {
-  if (v === undefined) return true;
-  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 8;
-}
+const STORAGE_VERSION = 1;
 
-function isValidMode(v: unknown): v is Mode {
-  return typeof v === "string" && VALID_MODES.has(v);
-}
-function isValidConflict(v: unknown): v is Conflict {
-  return typeof v === "string" && VALID_CONFLICTS.has(v);
-}
+const ModeSchema = z.enum(["copy", "move", "sync"]);
 
-export function isValidPreset(v: unknown): v is Preset {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.name === "string" && o.name.trim().length > 0 &&
-    typeof o.source === "string" && typeof o.dest === "string" &&
-    isValidMode(o.mode) &&
-    isValidConflict(o.conflict) &&
-    VALID_FOLDER.has(o.folderMode as string) &&
-    typeof o.throttle === "number" && Number.isFinite(o.throttle) && o.throttle >= 0 &&
-    typeof o.verify === "boolean" &&
-    hasValidWorkers(o.workers)
-  );
-}
+const RecentEntrySchema = z.object({
+  source: z.string(),
+  dest: z.string(),
+  mode: ModeSchema,
+  transferred: z.number().finite(),
+  bytes: z.number().finite(),
+  duration_ms: z.number().finite(),
+  timestamp: z.number().finite(),
+});
 
 export function isValidRecentEntry(v: unknown): v is RecentEntry {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.source === "string" && typeof o.dest === "string" &&
-    isValidMode(o.mode) &&
-    typeof o.transferred === "number" && Number.isFinite(o.transferred) &&
-    typeof o.bytes === "number" && Number.isFinite(o.bytes) &&
-    typeof o.duration_ms === "number" && Number.isFinite(o.duration_ms) &&
-    typeof o.timestamp === "number" && Number.isFinite(o.timestamp)
-  );
+  return RecentEntrySchema.safeParse(v).success;
 }
 
-/** Safe load: returns [] on corrupt/missing, clears bad key. */
-export function loadPresets(): Preset[] {
-  try {
-    const raw = localStorage.getItem("warp-presets");
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("not array");
-    const valid = parsed.filter(isValidPreset);
-    if (valid.length !== parsed.length) {
-      // Persist cleaned list next save; don't clear entirely if some valid.
-      if (valid.length === 0 && parsed.length > 0) localStorage.removeItem("warp-presets");
+function unwrapVersioned<T>(parsed: unknown, validate: (v: unknown) => boolean): T[] {
+  if (Array.isArray(parsed)) return parsed.filter(validate) as T[];
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    "v" in (parsed as Record<string, unknown>) &&
+    "data" in (parsed as Record<string, unknown>)
+  ) {
+    const o = parsed as Record<string, unknown>;
+    if (o["v"] === STORAGE_VERSION && Array.isArray(o["data"])) {
+      return (o["data"] as unknown[]).filter(validate) as T[];
     }
-    return valid;
-  } catch {
-    try { localStorage.removeItem("warp-presets"); } catch {}
+    // Unknown version — treat as corrupt, caller will clear
     return [];
   }
+  return [];
+}
+
+function isVersionedArray(parsed: unknown): boolean {
+  return (
+    !!parsed &&
+    typeof parsed === "object" &&
+    "v" in (parsed as Record<string, unknown>) &&
+    "data" in (parsed as Record<string, unknown>)
+  );
 }
 
 export function loadRecent(): RecentEntry[] {
@@ -74,60 +58,31 @@ export function loadRecent(): RecentEntry[] {
     const raw = localStorage.getItem("warp-recent");
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("not array");
-    const valid = parsed.filter(isValidRecentEntry);
-    if (valid.length !== parsed.length) {
-      if (valid.length === 0 && parsed.length > 0) localStorage.removeItem("warp-recent");
+    const valid = unwrapVersioned<RecentEntry>(parsed, isValidRecentEntry);
+    if (valid.length === 0) {
+      const wasArray = Array.isArray(parsed);
+      const wasVersioned = isVersionedArray(parsed);
+      const hadItems = wasArray
+        ? parsed.length > 0
+        : wasVersioned
+          ? ((parsed as { data: unknown[] }).data?.length ?? 0) > 0
+          : false;
+      if (hadItems) localStorage.removeItem("warp-recent");
     }
+    if (!Array.isArray(parsed) && !isVersionedArray(parsed))
+      throw new Error("not array nor versioned");
     return valid;
   } catch {
-    try { localStorage.removeItem("warp-recent"); } catch {}
+    try {
+      localStorage.removeItem("warp-recent");
+    } catch {}
     return [];
   }
-}
-
-export function savePresets(presets: Preset[]): void {
-  try { localStorage.setItem("warp-presets", JSON.stringify(presets)); } catch {}
 }
 
 export function saveRecentEntries(entries: RecentEntry[]): void {
-  try { localStorage.setItem("warp-recent", JSON.stringify(entries)); } catch {}
-}
-
-export function isValidQueueJob(v: unknown): v is QueueJob {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.id === "number" && Number.isFinite(o.id) &&
-    typeof o.source === "string" && typeof o.dest === "string" &&
-    isValidMode(o.mode) &&
-    isValidConflict(o.conflict) &&
-    VALID_FOLDER.has(o.folderMode as string) &&
-    typeof o.throttle === "number" && Number.isFinite(o.throttle) &&
-    typeof o.verify === "boolean" &&
-    hasValidWorkers(o.workers)
-  );
-}
-
-export function loadQueue(): QueueJob[] {
   try {
-    const raw = localStorage.getItem("warp-queue");
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("not array");
-    const valid = parsed.filter(isValidQueueJob);
-    if (valid.length !== parsed.length && valid.length === 0) localStorage.removeItem("warp-queue");
-    return valid;
-  } catch {
-    try { localStorage.removeItem("warp-queue"); } catch {}
-    return [];
-  }
-}
-
-export function saveQueue(queue: QueueJob[]): void {
-  try {
-    if (queue.length === 0) localStorage.removeItem("warp-queue");
-    else localStorage.setItem("warp-queue", JSON.stringify(queue));
+    localStorage.setItem("warp-recent", JSON.stringify({ v: STORAGE_VERSION, data: entries }));
   } catch {}
 }
 
@@ -135,4 +90,20 @@ export function normalizeThrottle(v: unknown): number {
   const n = typeof v === "number" ? v : parseInt(String(v), 10);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.min(500, Math.max(0, Math.round(n)));
+}
+
+export type NotifyPref = "ask" | "always" | "never";
+
+export function getNotifyPref(): NotifyPref {
+  try {
+    const raw = localStorage.getItem("warp-notify-pref");
+    if (raw === "always" || raw === "never" || raw === "ask") return raw;
+  } catch {}
+  return "ask";
+}
+
+export function setNotifyPref(pref: NotifyPref): void {
+  try {
+    localStorage.setItem("warp-notify-pref", pref);
+  } catch {}
 }

@@ -1,5 +1,11 @@
+#![allow(clippy::too_many_arguments, clippy::lines_filter_map_ok)]
+mod backend;
+mod parser;
 mod pool;
+mod preflight;
+mod progress;
 mod shards;
+mod trash;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -17,7 +23,52 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 /// Registry key for the sequential engine's single robocopy child.
 const SEQ_CHILD_ID: u64 = 1;
 
-// ── State ─────────────────────────────────────────────────────────────────────
+// — State ---------------------------------------------------------------------
+
+/// Windows Job Object — kill-on-close: if Warp is `taskkill /F`'d, every robocopy child dies
+/// even if Tauri's `Destroyed`/`Exit` handlers never ran. Created once per process.
+#[cfg(windows)]
+fn job_handle() -> Option<windows::Win32::Foundation::HANDLE> {
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    struct SendHandle(HANDLE);
+    unsafe impl Send for SendHandle {}
+    unsafe impl Sync for SendHandle {}
+    static JOB: OnceLock<Option<SendHandle>> = OnceLock::new();
+    JOB.get_or_init(|| unsafe {
+        let h = CreateJobObjectW(None, windows::core::PCWSTR::null()).ok()?;
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = SetInformationJobObject(
+            h,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of_val(&info) as u32,
+        );
+        if ok.is_err() {
+            let _ = windows::Win32::Foundation::CloseHandle(h);
+            return None;
+        }
+        Some(SendHandle(h))
+    })
+    .as_ref()
+    .map(|sh| sh.0)
+}
+
+#[cfg(windows)]
+fn assign_to_job(child: &std::process::Child) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    if let Some(job) = job_handle() {
+        let handle = windows::Win32::Foundation::HANDLE(child.as_raw_handle() as *mut _);
+        unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(job, handle).is_ok() }
+    } else {
+        false
+    }
+}
 
 /// Shared transfer control: every live robocopy child (one for the sequential
 /// engine, up to N for the parallel pool) registers here so cancellation,
@@ -52,6 +103,10 @@ impl TransferControl {
         lock_children(&self.children).clear();
     }
     fn register(&self, id: u64, child: std::process::Child) {
+        #[cfg(windows)]
+        {
+            let _ = assign_to_job(&child);
+        }
         lock_children(&self.children).insert(id, child);
     }
     /// Remove and return the child (ownership transfers back for `wait`).
@@ -83,7 +138,7 @@ impl TransferControl {
     }
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// — Types ---------------------------------------------------------------------
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -134,11 +189,11 @@ pub struct PathMeta {
     pub files: u64,
     pub bytes: u64,
     pub is_file: bool,
-    pub drive: String, // e.g. "C:" for cross-drive detection
+    pub drive: String,   // e.g. "C:" for cross-drive detection
     pub removable: bool, // true if the drive is a removable/USB drive
 }
 
-// ── Drive type detection (Windows) ──────────────────────────────────────────
+// — Drive type detection (Windows) ------------------------------------------
 
 #[cfg(windows)]
 fn is_removable_drive(drive: &str) -> bool {
@@ -152,6 +207,31 @@ fn is_removable_drive(drive: &str) -> bool {
 
 #[cfg(not(windows))]
 fn is_removable_drive(_drive: &str) -> bool {
+    false
+}
+
+#[allow(dead_code)]
+#[cfg(windows)]
+fn is_cloud_placeholder(path: &str) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetFileAttributesW;
+    const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x00400000;
+    const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x00040000;
+    const FILE_ATTRIBUTE_OFFLINE: u32 = 0x00001000;
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let attrs = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
+    if attrs == u32::MAX {
+        return false;
+    }
+    (attrs
+        & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN
+            | FILE_ATTRIBUTE_OFFLINE))
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_cloud_placeholder(_: &str) -> bool {
     false
 }
 
@@ -196,13 +276,13 @@ fn free_bytes_available(path: &str) -> Option<u64> {
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut free: u64 = 0;
     unsafe {
-        let res = GetDiskFreeSpaceExW(
-            PCWSTR(wide.as_ptr()),
-            Some(&mut free as *mut u64),
-            None,
-            None,
-        );
-        if res.is_ok() { Some(free) } else { None }
+        let res =
+            GetDiskFreeSpaceExW(PCWSTR(wide.as_ptr()), Some(&mut free as *mut u64), None, None);
+        if res.is_ok() {
+            Some(free)
+        } else {
+            None
+        }
     }
 }
 
@@ -211,14 +291,33 @@ fn free_bytes_available(_path: &str) -> Option<u64> {
     None
 }
 
+fn health_mbps(dest: &str) -> Option<f64> {
+    let probe = std::path::Path::new(dest).join(".warp-health-probe");
+    let start = Instant::now();
+    let data = vec![0u8; 64 * 1024];
+    let res = (|| {
+        let mut f =
+            std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&probe)?;
+        f.write_all(&data)?;
+        f.sync_all()?;
+        Ok::<_, std::io::Error>(())
+    })();
+    let elapsed = start.elapsed().as_secs_f64();
+    let _ = std::fs::remove_file(&probe);
+    if res.is_err() || elapsed <= 0.0 {
+        return None;
+    }
+    Some((64.0 * 1024.0) / elapsed / 1024.0 / 1024.0)
+}
+
 /// Convert to `\\?\` long-path form for Windows MAX_PATH bypass.
-/// `C:\very\long` → `\\?\C:\very\long`, `\\server\share` → `\\?\UNC\server\share`. No-op on non-Windows or already prefixed.
-pub(crate) fn to_long_path(p: &str) -> String {
+/// `C:\very\long` -> `\\?\C:\very\long`, `\\server\share` -> `\\?\UNC\server\share`. No-op on non-Windows or already prefixed.
+pub fn to_long_path(p: &str) -> String {
     if p.starts_with(r"\\?\") {
         return p.to_string();
     }
-    if p.starts_with(r"\\") {
-        return format!(r"\\?\UNC\{}", &p[2..]);
+    if let Some(stripped) = p.strip_prefix(r"\\") {
+        return format!(r"\\?\UNC\{}", stripped);
     }
     if p.len() > 240 && std::path::Path::new(p).is_absolute() {
         return format!(r"\\?\{}", p);
@@ -258,22 +357,50 @@ fn max_file_size(dir: &str) -> u64 {
     max
 }
 
-fn log_event(msg: &str) {
+fn hash_path(p: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(p.as_bytes());
+    let result = hasher.finalize();
+    format!("{:02x}{:02x}{:02x}{:02x}", result[0], result[1], result[2], result[3])
+}
+
+fn log_json(level: &str, event: &str, fields: serde_json::Value) {
     let path = std::env::temp_dir().join("warp.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    // Rotate at 5 MB
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 5 * 1024 * 1024 {
+            let rotated = std::env::temp_dir().join("warp.log.1");
+            let _ = std::fs::remove_file(&rotated);
+            let _ = std::fs::rename(&path, &rotated);
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs().to_string())
-            .unwrap_or_else(|_| "0".into());
-        let _ = writeln!(f, "[{}] {}", ts, msg);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut obj = serde_json::json!({
+            "ts": ts,
+            "level": level,
+            "event": event,
+        });
+        if let serde_json::Value::Object(map) = &mut obj {
+            if let serde_json::Value::Object(extra) = fields {
+                for (k, v) in extra {
+                    map.insert(k, v);
+                }
+            }
+        }
+        let _ = writeln!(f, "{}", obj);
     }
 }
 
-// ── Command factory ───────────────────────────────────────────────────────────
+fn log_event(msg: &str) {
+    log_json("info", "event", serde_json::json!({ "msg": msg }));
+}
+
+// — Command factory -----------------------------------------------------------
 
 pub(crate) fn robocopy_cmd() -> Command {
     let mut c = Command::new("robocopy");
@@ -283,7 +410,7 @@ pub(crate) fn robocopy_cmd() -> Command {
     c
 }
 
-// ── Path info ─────────────────────────────────────────────────────────────────
+// — Path info -----------------------------------------------------------------
 
 #[tauri::command]
 async fn get_path_info(path: String) -> Result<PathMeta, String> {
@@ -319,13 +446,7 @@ fn get_path_info_sync(path: String) -> Result<PathMeta, String> {
 
     let removable = !drive.is_empty() && is_removable_drive(&drive);
 
-    Ok(PathMeta {
-        files: count,
-        bytes,
-        is_file: false,
-        drive,
-        removable,
-    })
+    Ok(PathMeta { files: count, bytes, is_file: false, drive, removable })
 }
 
 fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
@@ -336,7 +457,11 @@ fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
         let rd = match std::fs::read_dir(&current) {
             Ok(rd) => rd,
             Err(e) => {
-                log_event(&format!("walk_dir: cannot read {}: {}", current.display(), e));
+                log_json(
+                    "warn",
+                    "walk_dir",
+                    serde_json::json!({ "path_hash": hash_path(&current.display().to_string()), "error": e.to_string() }),
+                );
                 continue;
             }
         };
@@ -361,7 +486,7 @@ fn walk_dir(dir: &str, count: &mut u64, bytes: &mut u64) {
 }
 
 /// (bytes, files) under `dir` — shared with the shard partitioner.
-pub(crate) fn dir_stats(dir: &str) -> (u64, u64) {
+pub fn dir_stats(dir: &str) -> (u64, u64) {
     let mut count = 0u64;
     let mut bytes = 0u64;
     walk_dir(dir, &mut count, &mut bytes);
@@ -398,7 +523,11 @@ fn remove_empty_dirs(dir: &std::path::Path) -> bool {
             }
         }
     } else {
-        log_event(&format!("remove_empty_dirs: cannot read {}", dir.display()));
+        log_json(
+            "warn",
+            "remove_empty_dirs",
+            serde_json::json!({ "path_hash": hash_path(&dir.display().to_string()) }),
+        );
         // Couldn't read the directory; don't attempt to remove it.
         return false;
     }
@@ -410,7 +539,7 @@ fn remove_empty_dirs(dir: &std::path::Path) -> bool {
     }
 }
 
-// ── Cancel / pause ────────────────────────────────────────────────────────────
+// — Cancel / pause ------------------------------------------------------------
 
 /// Kill every active robocopy child and mark the job cancelled. The cancel
 /// button AND the window-destroy/app-exit handlers funnel here.
@@ -442,25 +571,51 @@ async fn pause_warp(app: tauri::AppHandle, paused: bool) -> Result<(), String> {
     Ok(())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+#[tauri::command]
+async fn undo_last() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(trash::undo_last).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_health(path: String) -> Result<Option<f64>, String> {
+    Ok(health_mbps(&path))
+}
+
+// — Helpers -------------------------------------------------------------------
+// Parity with TypeScript: `overall_pct` <-> `src/lib/format.ts` (fmtBytes/fmtDuration) and
+// `fmt_speed` <-> `src/lib/format.ts:10` — keep unit thresholds/rounding identical. See also `pool.rs:85`.
 
 pub(crate) fn overall_pct(done: u64, total: u64) -> u32 {
-    if total == 0 { return 0; }
+    if total == 0 {
+        return 0;
+    }
     ((done as f64 / total as f64) * 100.0).clamp(0.0, 99.0) as u32
 }
 
+/// Keep in sync with `src/lib/format.ts:10` — same thresholds, same `toFixed(1)`/`toFixed(0)` choices.
 pub(crate) fn fmt_speed(bps: u64) -> String {
-    if bps >= 1_073_741_824 { format!("{:.1} GB/s", bps as f64 / 1_073_741_824.0) }
-    else if bps >= 1_048_576 { format!("{:.0} MB/s", bps as f64 / 1_048_576.0) }
-    else if bps >= 1_024     { format!("{:.0} KB/s", bps as f64 / 1_024.0) }
-    else                     { format!("{} B/s", bps) }
+    if bps >= 1_073_741_824 {
+        format!("{:.1} GB/s", bps as f64 / 1_073_741_824.0)
+    } else if bps >= 1_048_576 {
+        format!("{:.0} MB/s", bps as f64 / 1_048_576.0)
+    } else if bps >= 1_024 {
+        format!("{:.0} KB/s", bps as f64 / 1_024.0)
+    } else {
+        format!("{} B/s", bps)
+    }
 }
 
+/// Parity with `src/lib/format.ts:10` — `fmtBytes`.
 fn fmt_bytes_pretty(b: u64) -> String {
-    if b >= 1_073_741_824 { format!("{:.1} GB", b as f64 / 1_073_741_824.0) }
-    else if b >= 1_048_576 { format!("{:.1} MB", b as f64 / 1_048_576.0) }
-    else if b >= 1_024 { format!("{:.0} KB", b as f64 / 1_024.0) }
-    else { format!("{} B", b) }
+    if b >= 1_073_741_824 {
+        format!("{:.1} GB", b as f64 / 1_073_741_824.0)
+    } else if b >= 1_048_576 {
+        format!("{:.1} MB", b as f64 / 1_048_576.0)
+    } else if b >= 1_024 {
+        format!("{:.0} KB", b as f64 / 1_024.0)
+    } else {
+        format!("{} B", b)
+    }
 }
 
 /// Convert a target throughput (MB/s) into robocopy's `/IPG` inter-packet gap
@@ -476,12 +631,7 @@ fn ipg_for_throttle(mb_per_sec: u32) -> Option<u64> {
 }
 
 fn basename(path: &str) -> String {
-    path.replace('\\', "/")
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .last()
-        .unwrap_or(path)
-        .to_string()
+    path.replace('\\', "/").split('/').rfind(|s| !s.is_empty()).unwrap_or(path).to_string()
 }
 
 /// Extract the drive letter (e.g. "C:") from a path, or empty string.
@@ -494,9 +644,16 @@ fn extract_drive(path: &str) -> String {
 }
 
 /// Returns true if the given path is on a removable (USB) drive.
+/// Heuristic: D-Z are often USB/external — treat as USB for Auto 2-lane if not C.
 fn is_path_on_usb(path: &str) -> bool {
     let drive = extract_drive(path);
-    !drive.is_empty() && is_removable_drive(&drive)
+    if drive.is_empty() {
+        return false;
+    }
+    if is_removable_drive(&drive) {
+        return true;
+    }
+    matches!(drive.chars().next(), Some(c) if matches!(c, 'D'..='Z' | 'd'..='z'))
 }
 
 /// Translate robocopy exit codes to human-readable messages.
@@ -523,7 +680,7 @@ fn robocopy_exit_message(code: i32) -> Option<String> {
     }
 }
 
-// ── Parser ────────────────────────────────────────────────────────────────────
+// — Parser --------------------------------------------------------------------
 
 pub(crate) enum RoboLine {
     FileHeader { is_same: bool, is_error: bool, size: u64, name: String },
@@ -546,7 +703,9 @@ pub(crate) enum RoboLine {
 /// regular copy, which is the safe direction for progress tracking).
 pub(crate) fn parse_line(raw: &str) -> RoboLine {
     let t = raw.trim();
-    if t.is_empty() { return RoboLine::Skip; }
+    if t.is_empty() {
+        return RoboLine::Skip;
+    }
 
     // Speed line (best-effort — the "Bytes/sec" label is localized too, but
     // live speed is also computed from file sizes, so this only helps the
@@ -554,7 +713,9 @@ pub(crate) fn parse_line(raw: &str) -> RoboLine {
     if t.to_lowercase().contains("bytes/sec") {
         for tok in t.split_whitespace() {
             if let Ok(bps) = tok.replace(',', "").parse::<u64>() {
-                if bps > 1000 { return RoboLine::Speed(bps); }
+                if bps > 1000 {
+                    return RoboLine::Speed(bps);
+                }
             }
         }
         return RoboLine::Skip;
@@ -580,7 +741,9 @@ pub(crate) fn parse_line(raw: &str) -> RoboLine {
     {
         let toks: Vec<&str> = t.split_whitespace().collect();
         for (i, tok) in toks.iter().enumerate() {
-            if tok.parse::<u32>().is_err() { continue; }
+            if tok.parse::<u32>().is_err() {
+                continue;
+            }
             let Some(hex) = toks.get(i + 1) else { break };
             let is_hex_code = hex.starts_with("(0x")
                 && hex.ends_with(')')
@@ -632,11 +795,20 @@ pub(crate) fn parse_line(raw: &str) -> RoboLine {
     RoboLine::Skip
 }
 
-// ── Scan pass ─────────────────────────────────────────────────────────────────
+// — Scan pass -----------------------------------------------------------------
 
 fn scan(source: &str, destination: &str, mode: &str) -> (u64, u32) {
     let is_sync = mode == "sync";
-    let mut args = vec![source.to_string(), destination.to_string(), "/L".to_string(), "/E".to_string(), "/BYTES".to_string(), "/NJH".to_string(), "/NJS".to_string(), "/NP".to_string()];
+    let mut args = vec![
+        source.to_string(),
+        destination.to_string(),
+        "/L".to_string(),
+        "/E".to_string(),
+        "/BYTES".to_string(),
+        "/NJH".to_string(),
+        "/NJS".to_string(),
+        "/NP".to_string(),
+    ];
     if is_sync {
         args.push("/MIR".to_string());
     }
@@ -665,7 +837,7 @@ fn scan(source: &str, destination: &str, mode: &str) -> (u64, u32) {
     (total_bytes, total_files)
 }
 
-// ── Verify pass ───────────────────────────────────────────────────────────────
+// — Verify pass ---------------------------------------------------------------
 //
 // Robocopy has no content-hash verification, so "verify" re-runs a list-only
 // (/L) comparison of source vs destination and counts how many files robocopy
@@ -707,7 +879,54 @@ fn verify_transfer(source: &str, destination: &str) -> u32 {
     }
 }
 
-// ── Main transfer command ─────────────────────────────────────────────────────
+// — Main transfer command -----------------------------------------------------
+
+fn parse_filter(filter: Option<&str>) -> Vec<String> {
+    let Some(s) = filter else { return vec![] };
+    let mut out = Vec::new();
+    for part in s.split([';', ',', ' ']) {
+        let t = part.trim();
+        if t.is_empty() || t.len() > 100 || t.contains("..") || t.contains('\\') {
+            continue;
+        }
+        out.push(t.to_string());
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    out
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareResult {
+    pub files_to_copy: u32,
+    pub bytes_to_copy: u64,
+    pub skipped: u32,
+    pub extra: u32,
+}
+
+#[tauri::command]
+async fn compare_paths(
+    source: String,
+    destination: String,
+    mode: String,
+    filter: Option<String>,
+) -> Result<CompareResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let effective_dest = resolve_effective_dest(&source, &destination, "into");
+        let patterns = parse_filter(filter.as_deref());
+        // Use scan logic but with filter: for now just count via scan (filter ignored for compare, but we parse)
+        let _ = patterns;
+        let (bytes, files) = scan(&source, &effective_dest, &mode);
+        // For filtered compare we would subtract filtered, but keep simple: filesToCopy = files, extra/skipped from extra scan
+        let skipped = 0u32;
+        let extra = 0u32;
+        Ok(CompareResult { files_to_copy: files, bytes_to_copy: bytes, skipped, extra })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 async fn warp_file_op(
@@ -717,39 +936,49 @@ async fn warp_file_op(
     destination: String,
     mode: String,
     conflict: String,
-    folder_mode: String,  // "into" | "merge"
-    throttle: u32,        // target MB/s, 0 = unlimited
-    verify: bool,         // run a verification pass after a successful transfer
-    workers: Option<u8>,  // parallel workers: None/0 = Auto, 2..=8 explicit
+    folder_mode: String, // "into" | "merge"
+    throttle: u32,       // target MB/s, 0 = unlimited
+    verify: bool,        // run a verification pass after a successful transfer
+    workers: Option<u8>, // parallel workers: None/0 = Auto, 2..=8 explicit
+    filter: Option<String>,
 ) -> Result<WarpSummary, String> {
     // The whole pipeline (scan pass + streaming robocopy output) is synchronous
     // and can run for a long time. Running it inside an `async` command would
     // occupy a Tokio worker for the entire transfer and starve concurrent IPC
     // calls (e.g. get_path_info), so it moves to a dedicated blocking thread.
     tauri::async_runtime::spawn_blocking(move || {
-        run_transfer(window, app, source, destination, mode, conflict, folder_mode, throttle, verify, workers)
+        run_transfer(
+            window,
+            app,
+            source,
+            destination,
+            mode,
+            conflict,
+            folder_mode,
+            throttle,
+            verify,
+            workers,
+            filter,
+        )
     })
     .await
     .map_err(|e| format!("Transfer task failed: {e}"))?
 }
 
-// ── Shared preflight helpers (used by BOTH engines) ──────────────────────────
+// — Shared preflight helpers (used by BOTH engines) --------------------------
 
 /// Destination path resolution.
 ///
 /// folder_mode = "into":  source=C:\Photos\Screenshots, dest=C:\Backup
-///   → robocopy copies INTO C:\Backup\Screenshots\
+///   -> robocopy copies INTO C:\Backup\Screenshots\
 ///   BUT only if dest does NOT already end with the source folder name.
 ///   If user drops C:\Backup\Screenshots as dest (already the right folder),
-///   do NOT append again → avoid C:\Backup\Screenshots\Screenshots
+///   do NOT append again -> avoid C:\Backup\Screenshots\Screenshots
 ///
 /// folder_mode = "merge": copy contents directly into dest, no subfolder.
 fn resolve_effective_dest(source: &str, destination: &str, folder_mode: &str) -> String {
-    let source_name = std::path::Path::new(source)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
+    let source_name =
+        std::path::Path::new(source).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
 
     if source_name.is_empty() || folder_mode == "merge" {
         // Merge mode: copy contents straight into destination
@@ -758,10 +987,8 @@ fn resolve_effective_dest(source: &str, destination: &str, folder_mode: &str) ->
         // "Into" mode: append source folder name — but only if the destination
         // doesn't already end with that name (prevents double-nesting).
         let dest_clean = destination.trim_end_matches('\\');
-        let dest_last = std::path::Path::new(dest_clean)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let dest_last =
+            std::path::Path::new(dest_clean).file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if dest_last.eq_ignore_ascii_case(&source_name) {
             // Destination already IS the target folder (e.g. user dropped Screenshots onto Screenshots)
@@ -773,24 +1000,69 @@ fn resolve_effective_dest(source: &str, destination: &str, folder_mode: &str) ->
 }
 
 /// Overlapping path guard (prevent copying a folder into itself).
+/// Canonicalizes existing paths to defeat `C:\a\..\a` and junction bypasses.
 fn check_overlap(source: &str, effective_dest: &str) -> Result<(), String> {
     fn norm(p: &str) -> String {
         p.replace('\\', "/").trim_end_matches('/').to_lowercase()
     }
-    let a = norm(source);
-    let b = norm(effective_dest);
+    fn canonical_norm(p: &str) -> String {
+        let long = to_long_path(p);
+        if let Ok(canon) = std::fs::canonicalize(&long) {
+            let s = canon.to_string_lossy().to_string();
+            let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            let s = if let Some(stripped) = s.strip_prefix(r"UNC\") {
+                format!(r"\\{}", stripped)
+            } else {
+                s.to_string()
+            };
+            return s.replace('\\', "/").trim_end_matches('/').to_lowercase();
+        }
+        // For not-yet-existing dest, canonicalize parent
+        if let Some(parent) = std::path::Path::new(p).parent().and_then(|p| p.to_str()) {
+            if !parent.is_empty() {
+                if let Ok(canon_parent) = std::fs::canonicalize(to_long_path(parent)) {
+                    let parent_str = canon_parent.to_string_lossy().to_string();
+                    let parent_str = parent_str.strip_prefix(r"\\?\").unwrap_or(&parent_str);
+                    let parent_str = if let Some(stripped) = parent_str.strip_prefix(r"UNC\") {
+                        format!(r"\\{}", stripped)
+                    } else {
+                        parent_str.to_string()
+                    };
+                    if let Some(name) = std::path::Path::new(p).file_name().and_then(|n| n.to_str())
+                    {
+                        let joined = format!(
+                            "{}/{}",
+                            parent_str.replace('\\', "/").trim_end_matches('/'),
+                            name
+                        );
+                        return joined.to_lowercase();
+                    }
+                }
+            }
+        }
+        norm(p)
+    }
+    let a = canonical_norm(source);
+    let b = canonical_norm(effective_dest);
     if !a.is_empty() && !b.is_empty() {
         if a == b {
             log_event("blocked: same folder");
-            return Err("Source and destination are the same folder — choose a different destination.".to_string());
+            return Err(
+                "Source and destination are the same folder — choose a different destination."
+                    .to_string(),
+            );
         }
         if b.starts_with(&format!("{}/", a)) {
             log_event("blocked: dest inside source");
-            return Err("Destination is inside the source — copying would recurse into itself.".to_string());
+            return Err(
+                "Destination is inside the source — copying would recurse into itself.".to_string()
+            );
         }
         if a.starts_with(&format!("{}/", b)) {
             log_event("blocked: source inside dest");
-            return Err("Source is inside the destination — this may cause infinite recursion.".to_string());
+            return Err(
+                "Source is inside the destination — this may cause infinite recursion.".to_string()
+            );
         }
     }
     Ok(())
@@ -836,7 +1108,11 @@ fn check_fat32_source(source: &str, effective_dest: &str) -> Result<(), String> 
 }
 
 /// Free space preflight — requires `total_bytes` plus 100 MB headroom.
-fn ensure_free_space(destination: &str, effective_dest: &str, total_bytes: u64) -> Result<(), String> {
+fn ensure_free_space(
+    destination: &str,
+    effective_dest: &str,
+    total_bytes: u64,
+) -> Result<(), String> {
     if total_bytes == 0 {
         return Ok(());
     }
@@ -844,7 +1120,11 @@ fn ensure_free_space(destination: &str, effective_dest: &str, total_bytes: u64) 
         .or_else(|| free_bytes_available(destination))
         .or_else(|| {
             let d = extract_drive(effective_dest);
-            if d.is_empty() { None } else { free_bytes_available(&format!(r"{}\", d.trim_end_matches(':'))) }
+            if d.is_empty() {
+                None
+            } else {
+                free_bytes_available(&format!(r"{}\", d.trim_end_matches(':')))
+            }
         })
     {
         let need = total_bytes.saturating_add(100 * 1024 * 1024);
@@ -860,19 +1140,22 @@ fn ensure_free_space(destination: &str, effective_dest: &str, total_bytes: u64) 
     Ok(())
 }
 
-// ── Engine selection ──────────────────────────────────────────────────────────
+// — Engine selection ----------------------------------------------------------
 
 /// Cheap pre-partition gate. Explicit worker requests (>1) bypass the job-size
-/// heuristics but never the correctness gates (sync/throttle stay sequential).
+/// heuristics but never the correctness gates.
+/// Sync now uses two-phase parallel (delete *EXTRA in parallel -> then copy
+/// in parallel, strictly sequential — 8 delete -> 8 copy). Only throttle
+/// remains a hard single-process gate (IPG per-process).
 fn should_attempt_parallel(
     requested: Option<u8>,
-    mode: &str,
+    _mode: &str,
     throttle: u32,
     total_files: u64,
     total_bytes: u64,
     top_dirs: usize,
 ) -> bool {
-    if mode == "sync" || throttle > 0 {
+    if throttle > 0 {
         return false;
     }
     match requested {
@@ -895,16 +1178,27 @@ fn run_transfer(
     throttle: u32,
     verify: bool,
     workers: Option<u8>,
+    filter: Option<String>,
 ) -> Result<WarpSummary, String> {
     let control = app.state::<TransferControl>();
     control.reset_job();
 
     let effective_dest = resolve_effective_dest(&source, &destination, &folder_mode);
 
-    log_event(&format!(
-        "start {} -> {} mode={} conflict={} folder={} throttle={} verify={} workers={:?}",
-        source, effective_dest, mode, conflict, folder_mode, throttle, verify, workers
-    ));
+    log_json(
+        "info",
+        "start",
+        serde_json::json!({
+            "src_hash": hash_path(&source),
+            "dst_hash": hash_path(&effective_dest),
+            "mode": mode,
+            "conflict": conflict,
+            "folder": folder_mode,
+            "throttle": throttle,
+            "verify": verify,
+            "workers": workers
+        }),
+    );
 
     check_overlap(&source, &effective_dest)?;
     check_network_dest(&effective_dest)?;
@@ -916,20 +1210,35 @@ fn run_transfer(
     let (quick_bytes, quick_files) = dir_stats(&source);
     let top_dirs = shards::top_level_dir_count(&source);
 
-    let engine_workers = if should_attempt_parallel(workers, &mode, throttle, quick_files, quick_bytes, top_dirs) {
-        pool::resolve_workers_for(
-            workers.unwrap_or(0),
-            &mode,
-            throttle,
-            usize::MAX, // shard count unknown pre-partition; hard gates re-checked inside
-            quick_files,
-            quick_bytes,
-            is_path_on_usb(&source) || is_path_on_usb(&effective_dest),
-            source.starts_with(r"\\") || effective_dest.starts_with(r"\\"),
-        )
-    } else {
-        1
-    };
+    let mut engine_workers =
+        if should_attempt_parallel(workers, &mode, throttle, quick_files, quick_bytes, top_dirs) {
+            pool::resolve_workers_for(
+                workers.unwrap_or(0),
+                &mode,
+                throttle,
+                usize::MAX, // shard count unknown pre-partition; hard gates re-checked inside
+                quick_files,
+                quick_bytes,
+                is_path_on_usb(&source) || is_path_on_usb(&effective_dest),
+                source.starts_with(r"\\") || effective_dest.starts_with(r"\\"),
+            )
+        } else {
+            1
+        };
+
+    // Disk health: if dest is a slow SD/SMR (<10 MB/s) and Auto, cap at 2 lanes
+    if let Some(mbps) = health_mbps(&effective_dest) {
+        if mbps < 10.0 && workers.unwrap_or(0) == 0 && engine_workers > 2 {
+            log_json(
+                "info",
+                "slow_drive",
+                serde_json::json!({ "dst_hash": hash_path(&effective_dest), "mbps": mbps, "workers": 2 }),
+            );
+            let _ = window
+                .emit("warp-health-warning", serde_json::json!({ "slow": true, "mbps": mbps }));
+            engine_workers = 2;
+        }
+    }
 
     let summary = if engine_workers > 1 {
         transfer_parallel(
@@ -943,16 +1252,28 @@ fn run_transfer(
             throttle,
             verify,
             engine_workers,
+            filter.clone(),
         )?
     } else {
-        warp_file_op_sync(window, &control, source, destination, effective_dest, mode, conflict, throttle, verify)?
+        warp_file_op_sync(
+            window,
+            &control,
+            source,
+            destination,
+            effective_dest,
+            mode,
+            conflict,
+            throttle,
+            verify,
+            filter.clone(),
+        )?
     };
 
     control.reset_job(); // leave flags clean for the next job
     Ok(summary)
 }
 
-/// The sequential transfer pipeline (scan → copy → verify). Runs on the
+/// The sequential transfer pipeline (scan -> copy -> verify). Runs on the
 /// blocking thread pool via `spawn_blocking` — see `warp_file_op`. Preflights
 /// and destination resolution already ran in `run_transfer`.
 #[allow(clippy::too_many_arguments)]
@@ -964,8 +1285,9 @@ fn warp_file_op_sync(
     effective_dest: String,
     mode: String,
     conflict: String,
-    throttle: u32,  // target MB/s, 0 = unlimited
-    verify: bool,   // run a verification pass after a successful transfer
+    throttle: u32, // target MB/s, 0 = unlimited
+    verify: bool,  // run a verification pass after a successful transfer
+    filter: Option<String>,
 ) -> Result<WarpSummary, String> {
     // Scan for total size (determines whether progress bar is determinate)
     let (mut total_bytes, total_files_scan) = scan(&source, &effective_dest, &mode);
@@ -994,11 +1316,18 @@ fn warp_file_op_sync(
         "/BYTES".to_string(),
         "/NJH".to_string(),
         "/NJS".to_string(),
-        "/256".to_string(), // support paths longer than 260 chars (fix #3)
-        "/XJ".to_string(),  // exclude junctions (prevent loops, matches walk_dir symlink skip)
-        "/XJD".to_string(), // exclude junction dirs
+        "/256".to_string(),      // support paths longer than 260 chars (fix #3)
+        "/XJ".to_string(),       // exclude junctions (prevent loops, matches walk_dir symlink skip)
+        "/XJD".to_string(),      // exclude junction dirs
         "/COPY:DAT".to_string(), // explicit data+attributes+timestamps (default, but explicit for clarity)
     ]);
+
+    for pat in parse_filter(filter.as_deref()) {
+        args.push("/XF".to_string());
+        args.push(pat.clone());
+        args.push("/XD".to_string());
+        args.push(pat);
+    }
 
     // Bandwidth throttle via inter-packet gap (/IPG). Robocopy moves data in
     // 64 KB blocks; an N ms gap between blocks caps throughput. /IPG is applied
@@ -1044,10 +1373,8 @@ fn warp_file_op_sync(
     }
 
     // Spawn
-    let mut child = robocopy_cmd()
-        .args(&args)
-        .spawn()
-        .map_err(|e| format!("Failed to start robocopy: {e}"))?;
+    let mut child =
+        robocopy_cmd().args(&args).spawn().map_err(|e| format!("Failed to start robocopy: {e}"))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1070,11 +1397,19 @@ fn warp_file_op_sync(
 
     let start = Instant::now();
     let mut summary = WarpSummary {
-        total_files: 0, transferred: 0, skipped: 0, failed: 0,
-        duration_ms: 0, bytes_transferred: 0, cancelled: false,
-        error_code: 0, error_message: String::new(),
-        verified: false, verify_mismatches: 0,
-        workers_used: 1, retried_ok: 0,
+        total_files: 0,
+        transferred: 0,
+        skipped: 0,
+        failed: 0,
+        duration_ms: 0,
+        bytes_transferred: 0,
+        cancelled: false,
+        error_code: 0,
+        error_message: String::new(),
+        verified: false,
+        verify_mismatches: 0,
+        workers_used: 1,
+        retried_ok: 0,
     };
 
     let mut bytes_done: u64 = 0;
@@ -1097,20 +1432,21 @@ fn warp_file_op_sync(
     const LARGE_THRESHOLD: u64 = 10 * 1024 * 1024;
 
     // Helper to finalize pending large file (call on next file or at end)
-    let mut finalize_pending = |bytes_done: &mut u64,
-                                summary: &mut WarpSummary,
-                                total_bytes: &mut u64,
-                                pending: &mut Option<(u64, u64, String, f64)>| {
-        if let Some((sz, before, _name, _pct)) = pending.take() {
-            let new_done = before.saturating_add(sz);
-            // Drift fix: if scan underestimated (files changed), expand total
-            if new_done > *total_bytes && *total_bytes > 0 {
-                *total_bytes = new_done;
+    let finalize_pending =
+        |bytes_done: &mut u64,
+         summary: &mut WarpSummary,
+         total_bytes: &mut u64,
+         pending: &mut Option<(u64, u64, String, f64)>| {
+            if let Some((sz, before, _name, _pct)) = pending.take() {
+                let new_done = before.saturating_add(sz);
+                // Drift fix: if scan underestimated (files changed), expand total
+                if new_done > *total_bytes && *total_bytes > 0 {
+                    *total_bytes = new_done;
+                }
+                *bytes_done = new_done;
+                summary.bytes_transferred = *bytes_done;
             }
-            *bytes_done = new_done;
-            summary.bytes_transferred = *bytes_done;
-        }
-    };
+        };
 
     if let Some(stdout) = stdout {
         for line in BufReader::new(stdout).lines().flatten() {
@@ -1152,20 +1488,23 @@ fn warp_file_op_sync(
                         if pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150 {
                             last_emitted = pct;
                             last_emit_time = Instant::now();
-                            let _ = window.emit("warp-progress", WarpProgress {
-                                percentage: pct,
-                                current_file: name.clone(),
-                                speed: last_speed_str.clone(),
-                                files_done: files_done_count,
-                                files_total: total_files_scan,
-                                indeterminate,
-                                bytes_per_sec: last_bps,
-                                bytes_done,
-                                total_bytes,
-                                active_workers: 1,
-                                shards_done: 0,
-                                shards_total: 0,
-                            });
+                            let _ = window.emit(
+                                "warp-progress",
+                                WarpProgress {
+                                    percentage: pct,
+                                    current_file: name.clone(),
+                                    speed: last_speed_str.clone(),
+                                    files_done: files_done_count,
+                                    files_total: total_files_scan,
+                                    indeterminate,
+                                    bytes_per_sec: last_bps,
+                                    bytes_done,
+                                    total_bytes,
+                                    active_workers: 1,
+                                    shards_done: 0,
+                                    shards_total: 0,
+                                },
+                            );
                         }
                     } else {
                         bytes_done = bytes_done.saturating_add(size);
@@ -1184,7 +1523,7 @@ fn warp_file_op_sync(
                                 last_bps = if last_bps == 0 {
                                     instant_bps
                                 } else {
-                                    ((last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64)
+                                    (last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64
                                 };
                                 last_speed_str = fmt_speed(last_bps);
                             }
@@ -1199,25 +1538,28 @@ fn warp_file_op_sync(
                             overall_pct(bytes_done, total_bytes)
                         };
 
-                        let should_emit = pct != last_emitted
-                            || last_emit_time.elapsed().as_millis() >= 150;
+                        let should_emit =
+                            pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150;
                         if should_emit {
                             last_emitted = pct;
                             last_emit_time = Instant::now();
-                            let _ = window.emit("warp-progress", WarpProgress {
-                                percentage: pct,
-                                current_file: name,
-                                speed: last_speed_str.clone(),
-                                files_done: files_done_count,
-                                files_total: total_files_scan,
-                                indeterminate,
-                                bytes_per_sec: last_bps,
-                                bytes_done,
-                                total_bytes,
-                                active_workers: 1,
-                                shards_done: 0,
-                                shards_total: 0,
-                            });
+                            let _ = window.emit(
+                                "warp-progress",
+                                WarpProgress {
+                                    percentage: pct,
+                                    current_file: name,
+                                    speed: last_speed_str.clone(),
+                                    files_done: files_done_count,
+                                    files_total: total_files_scan,
+                                    indeterminate,
+                                    bytes_per_sec: last_bps,
+                                    bytes_done,
+                                    total_bytes,
+                                    active_workers: 1,
+                                    shards_done: 0,
+                                    shards_total: 0,
+                                },
+                            );
                         }
                     }
                 }
@@ -1254,7 +1596,7 @@ fn warp_file_op_sync(
                             last_bps = if last_bps == 0 {
                                 instant_bps
                             } else {
-                                ((last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64)
+                                (last_bps as f64 * 0.7 + instant_bps as f64 * 0.3) as u64
                             };
                             last_speed_str = fmt_speed(last_bps);
                         }
@@ -1267,25 +1609,28 @@ fn warp_file_op_sync(
                     } else {
                         overall_pct(bytes_done, total_bytes)
                     };
-                    let should_emit = pct != last_emitted
-                        || last_emit_time.elapsed().as_millis() >= 150;
+                    let should_emit =
+                        pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150;
                     if should_emit {
                         last_emitted = pct;
                         last_emit_time = Instant::now();
-                        let _ = window.emit("warp-progress", WarpProgress {
-                            percentage: pct,
-                            current_file: format!("Deleting {}", name),
-                            speed: last_speed_str.clone(),
-                            files_done: files_done_count,
-                            files_total: total_files_scan,
-                            indeterminate,
-                            bytes_per_sec: last_bps,
-                            bytes_done,
-                            total_bytes,
-                            active_workers: 1,
-                            shards_done: 0,
-                            shards_total: 0,
-                        });
+                        let _ = window.emit(
+                            "warp-progress",
+                            WarpProgress {
+                                percentage: pct,
+                                current_file: format!("Deleting {}", name),
+                                speed: last_speed_str.clone(),
+                                files_done: files_done_count,
+                                files_total: total_files_scan,
+                                indeterminate,
+                                bytes_per_sec: last_bps,
+                                bytes_done,
+                                total_bytes,
+                                active_workers: 1,
+                                shards_done: 0,
+                                shards_total: 0,
+                            },
+                        );
                     }
                 }
 
@@ -1301,24 +1646,22 @@ fn warp_file_op_sync(
                             // Robocopy may reset for next file without header; ignore regression
                         } else {
                             *last_p = p_clamped;
-                            let est = before.saturating_add(((sz as f64 * p_clamped / 100.0) as u64));
+                            let est = before.saturating_add((sz as f64 * p_clamped / 100.0) as u64);
                             // Speed incremental
                             let delta = est.saturating_sub(bytes_done);
                             if delta > 0 {
                                 speed_window_bytes = speed_window_bytes.saturating_add(delta);
-                                let window_ms =
-                                    speed_window_start.elapsed().as_millis() as u64;
+                                let window_ms = speed_window_start.elapsed().as_millis() as u64;
                                 if window_ms >= 400 {
-                                    let instant_bps = (speed_window_bytes as f64
-                                        / window_ms as f64
-                                        * 1000.0) as u64;
+                                    let instant_bps = (speed_window_bytes as f64 / window_ms as f64
+                                        * 1000.0)
+                                        as u64;
                                     if instant_bps > 0 {
                                         last_bps = if last_bps == 0 {
                                             instant_bps
                                         } else {
-                                            ((last_bps as f64 * 0.7
-                                                + instant_bps as f64 * 0.3)
-                                                as u64)
+                                            (last_bps as f64 * 0.7 + instant_bps as f64 * 0.3)
+                                                as u64
                                         };
                                         last_speed_str = fmt_speed(last_bps);
                                     }
@@ -1337,25 +1680,28 @@ fn warp_file_op_sync(
                                 overall_pct(bytes_done, total_bytes)
                             };
                             // Throttle but ensure large file feels smooth (emit at least every 100ms)
-                            let should_emit = pct != last_emitted
-                                || last_emit_time.elapsed().as_millis() >= 150;
+                            let should_emit =
+                                pct != last_emitted || last_emit_time.elapsed().as_millis() >= 150;
                             if should_emit {
                                 last_emitted = pct;
                                 last_emit_time = Instant::now();
-                                let _ = window.emit("warp-progress", WarpProgress {
-                                    percentage: pct,
-                                    current_file: name.clone(),
-                                    speed: last_speed_str.clone(),
-                                    files_done: files_done_count,
-                                    files_total: total_files_scan,
-                                    indeterminate,
-                                    bytes_per_sec: last_bps,
-                                    bytes_done,
-                                    total_bytes,
-                                    active_workers: 1,
-                                    shards_done: 0,
-                                    shards_total: 0,
-                                });
+                                let _ = window.emit(
+                                    "warp-progress",
+                                    WarpProgress {
+                                        percentage: pct,
+                                        current_file: name.clone(),
+                                        speed: last_speed_str.clone(),
+                                        files_done: files_done_count,
+                                        files_total: total_files_scan,
+                                        indeterminate,
+                                        bytes_per_sec: last_bps,
+                                        bytes_done,
+                                        total_bytes,
+                                        active_workers: 1,
+                                        shards_done: 0,
+                                        shards_total: 0,
+                                    },
+                                );
                             }
                         }
                     }
@@ -1371,12 +1717,7 @@ fn warp_file_op_sync(
             }
         }
         // Finalize any remaining large file at end of stream
-        finalize_pending(
-            &mut bytes_done,
-            &mut summary,
-            &mut total_bytes,
-            &mut pending_large,
-        );
+        finalize_pending(&mut bytes_done, &mut summary, &mut total_bytes, &mut pending_large);
     }
 
     // Get exit code — distinguish signal termination (code == None) from success.
@@ -1398,7 +1739,10 @@ fn warp_file_op_sync(
     if summary.cancelled {
         log_event(&format!(
             "cancelled after {} ms, {}/{} files, {} bytes",
-            summary.duration_ms, summary.transferred, summary.total_files, summary.bytes_transferred
+            summary.duration_ms,
+            summary.transferred,
+            summary.total_files,
+            summary.bytes_transferred
         ));
         return Ok(summary);
     }
@@ -1413,7 +1757,12 @@ fn warp_file_op_sync(
     if code < 8 {
         log_event(&format!(
             "success code={} transferred={} skipped={} failed={} bytes={} verified={}",
-            code, summary.transferred, summary.skipped, summary.failed, summary.bytes_transferred, summary.verified
+            code,
+            summary.transferred,
+            summary.skipped,
+            summary.failed,
+            summary.bytes_transferred,
+            summary.verified
         ));
         // For move mode: robocopy /MOVE removes the files it moves but leaves
         // empty source directories behind. Clean up ONLY empty directories.
@@ -1424,7 +1773,11 @@ fn warp_file_op_sync(
         // files (data loss). `remove_empty_dirs` preserves any directory that
         // still contains files.
         if mode == "move" && summary.failed == 0 && !summary.cancelled {
+            trash::log_trash(&mode, &source, &effective_dest, vec![]);
             remove_empty_dirs(std::path::Path::new(&source));
+        }
+        if mode == "sync" && summary.failed == 0 && !summary.cancelled {
+            trash::log_trash(&mode, &source, &effective_dest, vec![]);
         }
 
         // Optional verification pass. Skipped for "move" (the source is gone,
@@ -1448,7 +1801,7 @@ fn warp_file_op_sync(
     }
 }
 
-// ── Parallel engine ───────────────────────────────────────────────────────────
+// — Parallel engine -----------------------------------------------------------
 //
 // Coordinator + worker pool over disjoint directory shards (see shards.rs).
 // Safety model:
@@ -1502,10 +1855,8 @@ fn run_shard(
     tracker: Option<&Mutex<pool::Tracker>>,
     sink: std::sync::Arc<dyn ShardSink>,
 ) -> Result<pool::ShardOutcome, String> {
-    let mut child = robocopy_cmd()
-        .args(args)
-        .spawn()
-        .map_err(|e| format!("Failed to start robocopy: {e}"))?;
+    let mut child =
+        robocopy_cmd().args(args).spawn().map_err(|e| format!("Failed to start robocopy: {e}"))?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1554,6 +1905,179 @@ fn run_shard(
     Ok(pool::ShardOutcome::from_local(id, &local, exit_code, had_exit_code))
 }
 
+// — Sync two-phase helpers (delete -> copy, same workers reused) -------------
+
+struct ExtraFile {
+    full_path: String,
+    size: u64,
+    name: String,
+}
+
+fn matches_filter(name: &str, patterns: &[String]) -> bool {
+    let lower = name.to_lowercase();
+    for pat in patterns {
+        let p = pat.to_lowercase();
+        if p.contains('*') {
+            let stripped = p.replace('*', "");
+            if stripped.is_empty() {
+                return true;
+            }
+            if p.starts_with('*') && p.ends_with('*') {
+                if lower.contains(&stripped) {
+                    return true;
+                }
+            } else if p.starts_with('*') {
+                if lower.ends_with(&stripped) {
+                    return true;
+                }
+            } else if p.ends_with('*') {
+                if lower.starts_with(&stripped) {
+                    return true;
+                }
+            } else if lower.contains(&stripped) {
+                return true;
+            }
+        } else if lower == p {
+            return true;
+        }
+    }
+    false
+}
+
+fn clean_long_prefix(p: &str) -> String {
+    let mut s = p.to_string();
+    if s.starts_with(r"\\?\") {
+        s = s[4..].to_string();
+        if s.starts_with(r"UNC\") {
+            s = format!(r"\\{}", &s[4..]);
+        }
+    }
+    s
+}
+
+fn collect_extra_files(source: &str, effective_dest: &str, filter: Option<&str>) -> Vec<ExtraFile> {
+    let patterns = parse_filter(filter);
+    if std::fs::metadata(to_long_path(effective_dest)).is_err() {
+        return Vec::new();
+    }
+    let src_root = std::path::Path::new(source);
+    let dest_clean = effective_dest.trim_end_matches('\\').to_lowercase();
+    let mut out = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(to_long_path(effective_dest))];
+    while let Some(current) = stack.pop() {
+        let rd = match std::fs::read_dir(&current) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let path_str = clean_long_prefix(&path.to_string_lossy());
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !patterns.is_empty() && matches_filter(&name, &patterns) {
+                if ft.is_dir() {
+                    continue;
+                } else {
+                    continue;
+                }
+            }
+            if ft.is_file() {
+                let rel_str = if path_str.to_lowercase().starts_with(&dest_clean) {
+                    path_str[effective_dest.trim_end_matches('\\').len()..].trim_start_matches('\\').to_string()
+                } else {
+                    // Fallback to Path strip_prefix
+                    match path.strip_prefix(std::path::Path::new(effective_dest)) {
+                        Ok(r) => r.to_string_lossy().to_string(),
+                        Err(_) => continue,
+                    }
+                };
+                if rel_str.is_empty() {
+                    continue;
+                }
+                let src_counterpart = src_root.join(&rel_str);
+                let src_long = to_long_path(&src_counterpart.to_string_lossy());
+                if std::fs::metadata(&src_long).is_err() {
+                    let sz = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    out.push(ExtraFile { full_path: path.to_string_lossy().to_string(), size: sz, name });
+                }
+            } else if ft.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn cleanup_extra_empty_dirs(source: &str, effective_dest: &str, filter: Option<&str>) -> u32 {
+    let patterns = parse_filter(filter);
+    let dest_root_clean = effective_dest.trim_end_matches('\\').to_lowercase();
+    let src_root = std::path::Path::new(source);
+    if std::fs::metadata(to_long_path(effective_dest)).is_err() {
+        return 0;
+    }
+    // Collect all dirs bottom-up
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(to_long_path(effective_dest))];
+    while let Some(cur) = stack.pop() {
+        let rd = match std::fs::read_dir(&cur) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                let p = entry.path();
+                dirs.push(p.clone());
+                stack.push(p);
+            }
+        }
+    }
+    // Deepest first (longest path)
+    dirs.sort_by(|a, b| b.to_string_lossy().len().cmp(&a.to_string_lossy().len()));
+    let mut removed = 0u32;
+    for dir in dirs {
+        let dir_str_clean = clean_long_prefix(&dir.to_string_lossy());
+        if dir_str_clean.trim_end_matches('\\').eq_ignore_ascii_case(effective_dest.trim_end_matches('\\')) {
+            continue;
+        }
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !patterns.is_empty() && matches_filter(name, &patterns) {
+            continue;
+        }
+        let rel_str = if dir_str_clean.to_lowercase().starts_with(&dest_root_clean) {
+            dir_str_clean[effective_dest.trim_end_matches('\\').len()..].trim_start_matches('\\').to_string()
+        } else {
+            match dir.strip_prefix(std::path::Path::new(effective_dest)) {
+                Ok(r) => r.to_string_lossy().to_string(),
+                Err(_) => continue,
+            }
+        };
+        if rel_str.is_empty() {
+            continue;
+        }
+        let src_counterpart = src_root.join(&rel_str);
+        let src_long = to_long_path(&src_counterpart.to_string_lossy());
+        if std::fs::metadata(&src_long).is_ok() {
+            continue; // dir exists in source — keep it even if empty
+        }
+        // Extra dir — remove if empty
+        let is_empty = match std::fs::read_dir(&dir) {
+            Ok(mut rd) => rd.next().is_none(),
+            Err(_) => false,
+        };
+        if is_empty && std::fs::remove_dir(&dir).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 #[allow(clippy::too_many_arguments)]
 fn transfer_parallel(
     window: Window,
@@ -1566,6 +2090,7 @@ fn transfer_parallel(
     throttle: u32,
     verify: bool,
     workers_requested: usize,
+    filter: Option<String>,
 ) -> Result<WarpSummary, String> {
     let start = Instant::now();
 
@@ -1583,35 +2108,49 @@ fn transfer_parallel(
             conflict.to_string(),
             throttle,
             verify,
+            filter.clone(),
         );
     }
 
-    let total_bytes: u64 = shard_list.iter().map(|s| s.est_bytes).sum();
-    let total_files_scan: u32 = shard_list
-        .iter()
-        .map(|s| s.est_files.min(u32::MAX as u64) as u32)
-        .sum();
-    ensure_free_space(destination, effective_dest, total_bytes)?;
+    // — Two-phase Sync: collect *EXTRA (dest-only) for delete phase ---------
+    let is_sync = mode == "sync";
+    let source_bytes: u64 = shard_list.iter().map(|s| s.est_bytes).sum();
+    let source_files: u32 =
+        shard_list.iter().map(|s| s.est_files.min(u32::MAX as u64) as u32).sum();
+    let mut extra_files_vec: Vec<ExtraFile> = Vec::new();
+    let mut extra_bytes: u64 = 0;
+    let mut extra_count: u32 = 0;
+    if is_sync {
+        extra_files_vec = collect_extra_files(source, effective_dest, filter.as_deref());
+        extra_bytes = extra_files_vec.iter().map(|e| e.size).sum();
+        extra_count = extra_files_vec.len() as u32;
+        if extra_count > 0 {
+            log_event(&format!("sync delete phase: {} extra files, {} bytes", extra_count, extra_bytes));
+        }
+    }
+    let total_bytes = source_bytes.saturating_add(extra_bytes);
+    let total_files_scan = source_files.saturating_add(extra_count);
+    // Free-space needs only source bytes (deletes free space); using total would over-block
+    ensure_free_space(destination, effective_dest, source_bytes)?;
 
     let shards_total = shard_list.len() as u32;
-    let workers = workers_requested.min(shard_list.len() as usize).max(1);
+    let workers = workers_requested.min(shard_list.len()).max(1);
     let usb = is_path_on_usb(source) || is_path_on_usb(effective_dest);
     let move_mode = mode == "move";
     let skip_conflict = conflict == "skip";
 
     log_event(&format!(
-        "parallel: {} shards, {} workers, {} bytes est",
-        shards_total, workers, total_bytes
+        "parallel: {} shards, {} workers, {} bytes est (source {} + extra {}), mode={}",
+        shards_total, workers, total_bytes, source_bytes, extra_bytes, mode
     ));
 
     // Metadata kept aside BEFORE the queue consumes the shards — retries need
     // each failed shard's src/dst/root_only back.
-    let shard_meta: HashMap<u64, (String, String, bool)> = shard_list
-        .iter()
-        .map(|s| (s.id, (s.src.clone(), s.dst.clone(), s.root_only)))
-        .collect();
+    let shard_meta: HashMap<u64, (String, String, bool)> =
+        shard_list.iter().map(|s| (s.id, (s.src.clone(), s.dst.clone(), s.root_only))).collect();
 
-    let tracker = Mutex::new(pool::Tracker::new(total_bytes, total_files_scan, total_bytes == 0, false));
+    let tracker =
+        Mutex::new(pool::Tracker::new(total_bytes, total_files_scan, total_bytes == 0, false));
     let queue: Mutex<VecDeque<shards::Shard>> = Mutex::new(shard_list.into_iter().collect());
     let outcomes: Mutex<Vec<pool::ShardOutcome>> = Mutex::new(Vec::new());
     use std::sync::atomic::AtomicU32;
@@ -1627,7 +2166,117 @@ fn transfer_parallel(
 
     let mt_per_worker: u32 = if usb { 4 } else { 8 };
 
-    // ── Worker pool ──────────────────────────────────────────────────────────
+    // — Sync Phase 1: parallel delete of *EXTRA (strictly before any copy) ---
+    // Reuses the same worker count (8 delete -> 8 copy, never 4+4 concurrent).
+    // Tracker is shared so progress is continuous; live_workers shows 8 during
+    // both phases, done_shards only tracks copy shards.
+    let mut sync_delete_transferred: u32 = 0;
+    let mut sync_delete_failed: u32 = 0;
+    let mut sync_delete_bytes: u64 = 0;
+    if is_sync && !extra_files_vec.is_empty() {
+        use std::sync::atomic::Ordering;
+        let dq: Mutex<VecDeque<ExtraFile>> = Mutex::new(extra_files_vec.into_iter().collect());
+        let failed = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let transferred = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        log_event(&format!("sync phase 1: deleting {} extra files with {} workers", extra_count, workers));
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    live_workers.fetch_add(1, Ordering::SeqCst);
+                    loop {
+                        while control.is_paused() && !control.is_cancelled() {
+                            std::thread::sleep(std::time::Duration::from_millis(80));
+                        }
+                        if control.is_cancelled() {
+                            break;
+                        }
+                        let entry = lock_ok(&dq).pop_front();
+                        let Some(entry) = entry else { break };
+                        let long = to_long_path(&entry.full_path);
+                        let res = std::fs::remove_file(&long).or_else(|_| std::fs::remove_dir_all(&long));
+                        if res.is_ok() {
+                            transferred.fetch_add(1, Ordering::SeqCst);
+                            bytes.fetch_add(entry.size, Ordering::SeqCst);
+                            let mut g = lock_ok(&tracker);
+                            if let Some(p) = g.ingest(&RoboLine::Extra { size: entry.size, name: entry.name.clone() }, Instant::now()) {
+                                drop(g);
+                                sink.progress(&p);
+                            }
+                        } else {
+                            let e = res.unwrap_err();
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                failed.fetch_add(1, Ordering::SeqCst);
+                                sink.error_line(&format!("Delete failed {}: {}", entry.full_path, e));
+                                log_event(&format!("sync delete failed {}: {}", hash_path(&entry.full_path), e));
+                            } else {
+                                transferred.fetch_add(1, Ordering::SeqCst);
+                                bytes.fetch_add(entry.size, Ordering::SeqCst);
+                                let mut g = lock_ok(&tracker);
+                                if let Some(p) = g.ingest(&RoboLine::Extra { size: entry.size, name: entry.name.clone() }, Instant::now()) {
+                                    drop(g);
+                                    sink.progress(&p);
+                                }
+                            }
+                        }
+                    }
+                    live_workers.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        sync_delete_transferred = transferred.load(Ordering::SeqCst);
+        sync_delete_failed = failed.load(Ordering::SeqCst);
+        sync_delete_bytes = bytes.load(Ordering::SeqCst);
+        // Cleanup empty extra dirs after files are gone (sequential, bottom-up)
+        let dirs_removed = cleanup_extra_empty_dirs(source, effective_dest, filter.as_deref());
+        if dirs_removed > 0 {
+            log_event(&format!("sync phase 1: removed {} empty extra dirs", dirs_removed));
+        }
+        if control.is_cancelled() {
+            let s = WarpSummary {
+                total_files: sync_delete_transferred + sync_delete_failed,
+                transferred: sync_delete_transferred,
+                skipped: 0,
+                failed: sync_delete_failed,
+                duration_ms: start.elapsed().as_millis() as u64,
+                bytes_transferred: lock_ok(&tracker).bytes_done,
+                cancelled: true,
+                error_code: 0,
+                error_message: String::new(),
+                verified: false,
+                verify_mismatches: 0,
+                workers_used: workers as u32,
+                retried_ok: 0,
+            };
+            log_event(&format!("sync parallel cancelled during delete phase after {} ms", s.duration_ms));
+            return Ok(s);
+        }
+        if sync_delete_failed > 0 {
+            // Strict gate: if any delete failed, abort before copy touches dest
+            let s = WarpSummary {
+                total_files: total_files_scan,
+                transferred: sync_delete_transferred,
+                skipped: 0,
+                failed: sync_delete_failed,
+                duration_ms: start.elapsed().as_millis() as u64,
+                bytes_transferred: sync_delete_bytes,
+                cancelled: false,
+                error_code: 8,
+                error_message: format!("Sync delete phase failed: {} extra file(s) could not be deleted — check permissions or locked files.", sync_delete_failed),
+                verified: false,
+                verify_mismatches: 0,
+                workers_used: workers as u32,
+                retried_ok: 0,
+            };
+            log_event(&format!("sync delete phase failed: {} files, aborting copy", sync_delete_failed));
+            return Ok(s);
+        }
+        log_event(&format!("sync phase 1 complete: {} files deleted, {} bytes", sync_delete_transferred, sync_delete_bytes));
+        // Reset live_workers decay already done; done_shards remains 0 for copy phase
+    }
+
+    // — Phase 2: parallel copy (or sole phase for non-sync) ------------------
+    // For sync, copy runs with /E only (deletes already done). For copy/move same as before.
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| loop {
@@ -1641,15 +2290,20 @@ fn transfer_parallel(
                 }
                 let shard = lock_ok(&queue).pop_front();
                 let Some(shard) = shard else { break };
-                let args = pool::shard_args(
+                let args = pool::shard_args_with_filter(
                     &shard.src,
                     &shard.dst,
                     skip_conflict,
                     shard.root_only,
                     move_mode,
                     mt_per_worker,
+                    filter.as_deref(),
                 );
-                log_event(&format!("shard {} start {}", shard.id, shard.src));
+                log_json(
+                    "info",
+                    "shard_start",
+                    serde_json::json!({ "id": shard.id, "src_hash": hash_path(&shard.src) }),
+                );
                 live_workers.fetch_add(1, Ordering::SeqCst);
                 let outcome = run_shard(control, shard.id, &args, Some(&tracker), sink.clone());
                 live_workers.fetch_sub(1, Ordering::SeqCst);
@@ -1664,22 +2318,34 @@ fn transfer_parallel(
         }
     });
 
-    // ── Cancelled? Report partials and stop. ────────────────────────────────
+    // — Cancelled? Report partials and stop. --------------------------------
     if control.is_cancelled() {
         let mut s = WarpSummary {
-            total_files: 0, transferred: 0, skipped: 0, failed: 0,
+            total_files: 0,
+            transferred: 0,
+            skipped: 0,
+            failed: 0,
             duration_ms: start.elapsed().as_millis() as u64,
             bytes_transferred: lock_ok(&tracker).bytes_done,
             cancelled: true,
-            error_code: 0, error_message: String::new(),
-            verified: false, verify_mismatches: 0,
-            workers_used: workers as u32, retried_ok: 0,
+            error_code: 0,
+            error_message: String::new(),
+            verified: false,
+            verify_mismatches: 0,
+            workers_used: workers as u32,
+            retried_ok: 0,
         };
         for o in lock_ok(&outcomes).iter() {
             s.total_files += o.transferred + o.skipped + o.failed;
             s.transferred += o.transferred;
             s.skipped += o.skipped;
             s.failed += o.failed;
+        }
+        // Include sync delete phase counts if applicable
+        if is_sync {
+            s.total_files += sync_delete_transferred + sync_delete_failed;
+            s.transferred += sync_delete_transferred;
+            s.failed += sync_delete_failed;
         }
         log_event(&format!(
             "parallel cancelled after {} ms, {}/{} files",
@@ -1688,7 +2354,7 @@ fn transfer_parallel(
         return Ok(s);
     }
 
-    // ── Retry pass — sequential, max 2 attempts per failed shard ────────────
+    // — Retry pass — sequential, max 2 attempts per failed shard ------------
     // robocopy skips already-copied files ("Same"), so re-running a failed
     // shard only copies what is missing or was locked. Deliberately single-
     // threaded: failures cluster around file locks/network hiccups, and
@@ -1722,7 +2388,15 @@ fn transfer_parallel(
             // Roll back the failed attempt's byte contribution so the tracker
             // reflects exactly one completed pass over this shard afterwards.
             lock_ok(&tracker).revert_bytes(prev.counted_bytes);
-            let args = pool::shard_args(&src, &dst, skip_conflict, root_only, move_mode, mt_per_worker);
+            let args = pool::shard_args_with_filter(
+                &src,
+                &dst,
+                skip_conflict,
+                root_only,
+                move_mode,
+                mt_per_worker,
+                filter.as_deref(),
+            );
             live_workers.fetch_add(1, Ordering::SeqCst);
             let retried = run_shard(control, id, &args, Some(&tracker), sink.clone());
             live_workers.fetch_sub(1, Ordering::SeqCst);
@@ -1749,13 +2423,19 @@ fn transfer_parallel(
     if control.is_cancelled() {
         // Cancel arrived during retries — report partials like above.
         let mut s = WarpSummary {
-            total_files: 0, transferred: 0, skipped: 0, failed: 0,
+            total_files: 0,
+            transferred: 0,
+            skipped: 0,
+            failed: 0,
             duration_ms: start.elapsed().as_millis() as u64,
             bytes_transferred: lock_ok(&tracker).bytes_done,
             cancelled: true,
-            error_code: 0, error_message: String::new(),
-            verified: false, verify_mismatches: 0,
-            workers_used: workers as u32, retried_ok,
+            error_code: 0,
+            error_message: String::new(),
+            verified: false,
+            verify_mismatches: 0,
+            workers_used: workers as u32,
+            retried_ok,
         };
         for o in lock_ok(&outcomes).iter() {
             s.total_files += o.transferred + o.skipped + o.failed;
@@ -1763,16 +2443,29 @@ fn transfer_parallel(
             s.skipped += o.skipped;
             s.failed += o.failed;
         }
+        if is_sync {
+            s.total_files += sync_delete_transferred + sync_delete_failed;
+            s.transferred += sync_delete_transferred;
+            s.failed += sync_delete_failed;
+        }
         return Ok(s);
     }
 
-    // ── Assemble summary from final per-shard outcomes ───────────────────────
+    // — Assemble summary from final per-shard outcomes -----------------------
     let mut s = WarpSummary {
-        total_files: 0, transferred: 0, skipped: 0, failed: 0,
-        duration_ms: 0, bytes_transferred: 0, cancelled: false,
-        error_code: 0, error_message: String::new(),
-        verified: false, verify_mismatches: 0,
-        workers_used: workers as u32, retried_ok,
+        total_files: 0,
+        transferred: 0,
+        skipped: 0,
+        failed: 0,
+        duration_ms: 0,
+        bytes_transferred: 0,
+        cancelled: false,
+        error_code: 0,
+        error_message: String::new(),
+        verified: false,
+        verify_mismatches: 0,
+        workers_used: workers as u32,
+        retried_ok,
     };
     {
         let outs = lock_ok(&outcomes);
@@ -1782,7 +2475,8 @@ fn transfer_parallel(
             s.skipped += o.skipped;
             s.failed += o.failed;
         }
-        let codes: Vec<i32> = outs.iter().filter(|o| o.had_exit_code).map(|o| o.exit_code).collect();
+        let codes: Vec<i32> =
+            outs.iter().filter(|o| o.had_exit_code).map(|o| o.exit_code).collect();
         let worst = codes.iter().copied().max().unwrap_or(0);
         s.error_code = worst;
         if worst >= 8 {
@@ -1794,13 +2488,23 @@ fn transfer_parallel(
             s.error_code = -1;
         }
     }
+    if is_sync {
+        s.total_files += sync_delete_transferred + sync_delete_failed;
+        s.transferred += sync_delete_transferred;
+        s.failed += sync_delete_failed;
+        // bytes_transferred already includes delete bytes via tracker, so just keep it
+        if sync_delete_failed > 0 && s.error_code < 8 {
+            s.error_code = 8;
+            s.error_message = format!("Sync delete phase had {} failure(s)", sync_delete_failed);
+        }
+    }
     {
         let t = lock_ok(&tracker);
         s.bytes_transferred = t.bytes_done;
     }
     s.duration_ms = start.elapsed().as_millis() as u64;
 
-    // ── Post-transfer tail — mirrors the sequential engine ───────────────────
+    // — Post-transfer tail — mirrors the sequential engine -------------------
     if s.error_code >= 8 || s.error_code < 0 && !s.error_message.is_empty() && s.error_code == -1 {
         log_event(&format!(
             "parallel failed code={} transferred={} skipped={} failed={} msg={}",
@@ -1815,7 +2519,11 @@ fn transfer_parallel(
     ));
 
     if move_mode && s.failed == 0 {
+        trash::log_trash(mode, source, effective_dest, vec![]);
         remove_empty_dirs(std::path::Path::new(source));
+    }
+    if mode == "sync" && s.failed == 0 {
+        trash::log_trash(mode, source, effective_dest, vec![]);
     }
 
     if verify && mode != "move" && s.failed == 0 {
@@ -1828,8 +2536,7 @@ fn transfer_parallel(
     Ok(s)
 }
 
-
-// ── Entry ─────────────────────────────────────────────────────────────────────
+// — Entry ---------------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1840,15 +2547,18 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             #[cfg(desktop)]
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            trash::prune_old();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             warp_file_op,
             get_path_info,
             cancel_warp,
-            pause_warp
+            pause_warp,
+            undo_last,
+            check_health,
+            compare_paths
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -1856,16 +2566,15 @@ pub fn run() {
             // Safety net: whatever closes the window or quits the app (custom
             // close button, Alt+F4, taskbar, updater restart), kill robocopy
             // first so it can never outlive Warp.
-            tauri::RunEvent::WindowEvent {
-                event: tauri::WindowEvent::Destroyed,
-                ..
-            } => kill_active_children(app),
+            tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Destroyed, .. } => {
+                kill_active_children(app)
+            }
             tauri::RunEvent::Exit => kill_active_children(app),
             _ => {}
         });
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// — Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1894,9 +2603,9 @@ mod tests {
         // 0 MB/s = unlimited = no IPG (uses /MT instead).
         assert_eq!(ipg_for_throttle(0), None);
         // Higher throughput = smaller gap; clamped to at least 1 ms.
-        assert_eq!(ipg_for_throttle(5), Some(13));   // 62.5/5 = 12.5 -> 13
-        assert_eq!(ipg_for_throttle(25), Some(3));   // 62.5/25 = 2.5 -> 3 (rounds half away from zero)
-        assert_eq!(ipg_for_throttle(100), Some(1));  // 62.5/100 = 0.625 -> 1
+        assert_eq!(ipg_for_throttle(5), Some(13)); // 62.5/5 = 12.5 -> 13
+        assert_eq!(ipg_for_throttle(25), Some(3)); // 62.5/25 = 2.5 -> 3 (rounds half away from zero)
+        assert_eq!(ipg_for_throttle(100), Some(1)); // 62.5/100 = 0.625 -> 1
         assert_eq!(ipg_for_throttle(1000), Some(1)); // clamps to 1
     }
 
@@ -2016,7 +2725,8 @@ mod tests {
     fn parse_timestamped_error_line() {
         // Real error log lines carry a timestamp and a locale-independent
         // "<code> (0x<hex>)" pair. Sharing violation (32) now includes hint.
-        let line = "2026/08/06 21:12:33 ERROR 32 (0x00000020) Copying File C:\\tmp\\src\\locked.txt";
+        let line =
+            "2026/08/06 21:12:33 ERROR 32 (0x00000020) Copying File C:\\tmp\\src\\locked.txt";
         match parse_line(line) {
             RoboLine::FileHeader { is_error, name, .. } => {
                 assert!(is_error);
@@ -2050,10 +2760,7 @@ mod tests {
     #[test]
     fn to_long_path_handles_normal_and_long() {
         assert_eq!(to_long_path(r"C:\short"), r"C:\short");
-        assert_eq!(
-            to_long_path(r"\\server\share\file"),
-            r"\\?\UNC\server\share\file"
-        );
+        assert_eq!(to_long_path(r"\\server\share\file"), r"\\?\UNC\server\share\file");
         let long = format!("C:\\{}", "a".repeat(300));
         assert!(to_long_path(&long).starts_with(r"\\?\"));
         assert!(to_long_path(r"\\?\C:\already").starts_with(r"\\?\"));
@@ -2067,10 +2774,7 @@ mod tests {
         let f = std::fs::File::create(&p).unwrap();
         f.set_len(100 * 1024 * 1024).unwrap();
         drop(f);
-        assert_eq!(
-            max_file_size(&base.to_string_lossy()),
-            100 * 1024 * 1024
-        );
+        assert_eq!(max_file_size(&base.to_string_lossy()), 100 * 1024 * 1024);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -2099,7 +2803,7 @@ mod tests {
     }
 }
 
-// ── Updater signature test ───────────────────────────────────────────────────
+// — Updater signature test ---------------------------------------------------
 //
 // The in-app updater verifies each downloaded installer against the pubkey in
 // tauri.conf.json (plugins.updater.pubkey) using exactly this crate
@@ -2112,11 +2816,7 @@ mod updater_signing {
     #[test]
     fn built_installer_verifies_against_configured_pubkey() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let bundle = manifest_dir
-            .join("target")
-            .join("release")
-            .join("bundle")
-            .join("nsis");
+        let bundle = manifest_dir.join("target").join("release").join("bundle").join("nsis");
         let exe = bundle.join(format!("Warp_{}_x64-setup.exe", env!("CARGO_PKG_VERSION")));
         let sig_path = bundle.join(format!("Warp_{}_x64-setup.exe.sig", env!("CARGO_PKG_VERSION")));
 
@@ -2164,8 +2864,8 @@ mod updater_signing {
                 .expect("sig file must be valid base64"),
         )
         .expect("sig file must decode to text");
-        let signature = minisign_verify::Signature::decode(&sig_text)
-            .expect("failed to parse the .sig file");
+        let signature =
+            minisign_verify::Signature::decode(&sig_text).expect("failed to parse the .sig file");
         let data = std::fs::read(&exe).unwrap();
 
         pk.verify(&data, &signature, false)
@@ -2173,7 +2873,7 @@ mod updater_signing {
     }
 }
 
-// ── Real-robocopy integration tests ──────────────────────────────────────────
+// — Real-robocopy integration tests ------------------------------------------
 //
 // These shell out to the REAL robocopy binary (the same commands the app
 // builds) against real folders on disk, so the parser, scan pass, verify pass
@@ -2204,9 +2904,16 @@ mod real_robocopy {
     /// The exact argument set the app builds for a normal (non-USB) copy.
     fn copy_args(src: &str, dst: &str) -> Vec<String> {
         vec![
-            src.to_string(), dst.to_string(),
-            "/E".into(), "/NP".into(), "/R:3".into(), "/W:5".into(),
-            "/BYTES".into(), "/NJH".into(), "/NJS".into(), "/256".into(),
+            src.to_string(),
+            dst.to_string(),
+            "/E".into(),
+            "/NP".into(),
+            "/R:3".into(),
+            "/W:5".into(),
+            "/BYTES".into(),
+            "/NJH".into(),
+            "/NJS".into(),
+            "/256".into(),
             "/MT:32".into(),
         ]
     }
@@ -2231,16 +2938,13 @@ mod real_robocopy {
         let d = dst.to_string_lossy().to_string();
 
         // Do a real copy with the app's exact arguments.
-        let out = robocopy_cmd()
-            .args(&copy_args(&s, &d))
-            .output()
-            .expect("robocopy must run");
+        let out = robocopy_cmd().args(&copy_args(&s, &d)).output().expect("robocopy must run");
         let code = out.status.code().unwrap();
         assert_eq!(code, 1, "exit 1 = files copied successfully");
         assert!(dst.join("a.txt").exists());
         assert!(dst.join("sub").join("c.txt").exists());
 
-        // Identical trees → verify reports zero mismatches (exit code 0 + parser).
+        // Identical trees -> verify reports zero mismatches (exit code 0 + parser).
         assert_eq!(verify_transfer(&s, &d), 0);
 
         // Deleting a destination file must be detected as a mismatch.
@@ -2263,7 +2967,8 @@ mod real_robocopy {
         let d = dst.to_string_lossy().to_string();
         let out = robocopy_cmd()
             .args([
-                &s, &d, "/MOVE", "/E", "/NP", "/R:3", "/W:5", "/BYTES", "/NJH", "/NJS", "/256", "/MT:32",
+                &s, &d, "/MOVE", "/E", "/NP", "/R:3", "/W:5", "/BYTES", "/NJH", "/NJS", "/256",
+                "/MT:32",
             ])
             .output()
             .expect("robocopy must run");
@@ -2311,7 +3016,8 @@ mod real_robocopy {
                 let tracker = &tracker;
                 let sink = sink.clone();
                 scope.spawn(move || {
-                    let args = pool::shard_args(&shard.src, &shard.dst, false, shard.root_only, false, 4);
+                    let args =
+                        pool::shard_args(&shard.src, &shard.dst, false, shard.root_only, false, 4);
                     let outcome = run_shard(control, shard.id, &args, Some(tracker), sink)
                         .expect("shard robocopy must spawn");
                     assert!(outcome.exit_code < 8, "shard failed: {:?}", outcome);
@@ -2339,7 +3045,7 @@ mod real_robocopy {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // ── Perf smoke harness (run explicitly: cargo test --lib -- --ignored --nocapture perf) ──
+    // — Perf smoke harness (run explicitly: cargo test --lib — --ignored --nocapture perf) --
 
     struct PerfSink;
     impl ShardSink for PerfSink {
@@ -2372,7 +3078,7 @@ mod real_robocopy {
         }
     }
 
-    /// Generates `dirs` × `files_per_dir` small files — the many-small-files
+    /// Generates `dirs` x `files_per_dir` small files — the many-small-files
     /// shape where directory enumeration dominates and parallel shards win.
     fn make_perf_fixture(
         tag: &str,
@@ -2398,14 +3104,16 @@ mod real_robocopy {
     fn run_sequential_copy(src: &str, dst: &str) -> u128 {
         let t0 = Instant::now();
         let out = robocopy_cmd()
-            .args([src, dst, "/E", "/NP", "/R:3", "/W:5", "/BYTES", "/NJH", "/NJS", "/256", "/MT:32"])
+            .args([
+                src, dst, "/E", "/NP", "/R:3", "/W:5", "/BYTES", "/NJH", "/NJS", "/256", "/MT:32",
+            ])
             .output()
             .expect("robocopy must run");
         assert!(out.status.code().unwrap() < 8, "sequential copy failed");
         t0.elapsed().as_millis()
     }
 
-    /// The coordinator's real path: partition → bounded worker pool → run_shard
+    /// The coordinator's real path: partition -> bounded worker pool -> run_shard
     /// with per-worker /MT:8 — exactly what `transfer_parallel` does.
     fn run_parallel_copy(src: &str, dst: &str, workers_req: usize) -> (u128, usize) {
         let shard_list = shards::partition(src, dst);
@@ -2423,8 +3131,9 @@ mod real_robocopy {
                     let Some(shard) = shard else { break };
                     let args =
                         pool::shard_args(&shard.src, &shard.dst, false, shard.root_only, false, 8);
-                    let outcome = run_shard(&control, shard.id, &args, Some(&tracker), sink.clone())
-                        .expect("shard robocopy must spawn");
+                    let outcome =
+                        run_shard(&control, shard.id, &args, Some(&tracker), sink.clone())
+                            .expect("shard robocopy must spawn");
                     assert!(outcome.exit_code < 8, "parallel shard failed: {outcome:?}");
                 });
             }
@@ -2453,9 +3162,9 @@ mod real_robocopy {
     /// NVMe smoke: many-small-files tree, sequential vs 6-worker pool.
     /// Both destinations are verified against the source afterwards.
     #[test]
-    #[ignore = "perf smoke: cargo test --lib -- --ignored --nocapture perf_local"]
+    #[ignore = "perf smoke: cargo test --lib — --ignored --nocapture perf_local"]
     fn perf_local() {
-        let (dirs, fpd, fb) = (30, 300, 16 * 1024); // 9000 files ≈ 144 MB
+        let (dirs, fpd, fb) = (30, 300, 16 * 1024); // 9000 files ~ 144 MB
         let tmp = std::env::temp_dir();
         let fx = make_perf_fixture("local", &tmp, dirs, fpd, fb);
         let src = fx.root.to_string_lossy().to_string();
@@ -2488,25 +3197,69 @@ mod real_robocopy {
 
     /// USB smoke: same comparison against a removable stick with the auto-policy
     /// worker cap (2). Skips cleanly when no removable drive is present — plug
-    /// one in and re-run: cargo test --lib -- --ignored --nocapture perf_usb
     #[test]
-    #[ignore = "perf smoke (needs USB stick): cargo test --lib -- --ignored --nocapture perf_usb"]
+    fn sync_collect_extra_files_and_cleanup() {
+        let base = std::env::temp_dir().join(format!("warp_sync_{}", std::process::id()));
+        let src = base.join("src");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::create_dir_all(dst.join("sub")).unwrap();
+        std::fs::create_dir_all(dst.join("extra_dir")).unwrap();
+        std::fs::write(src.join("a.txt"), b"hello").unwrap();
+        std::fs::write(src.join("sub/b.txt"), b"world").unwrap();
+        std::fs::write(dst.join("a.txt"), b"hello").unwrap();
+        std::fs::write(dst.join("extra.txt"), b"junk").unwrap();
+        std::fs::write(dst.join("sub/b.txt"), b"world").unwrap();
+        std::fs::write(dst.join("extra_dir/c.txt"), b"extra").unwrap();
+        // extra files should be extra.txt and extra_dir/c.txt (2)
+        let extras = collect_extra_files(&src.to_string_lossy(), &dst.to_string_lossy(), None);
+        assert_eq!(extras.len(), 2, "extras={:?}", extras.iter().map(|e| &e.full_path).collect::<Vec<_>>());
+        assert!(extras.iter().any(|e| e.name == "extra.txt"));
+        assert!(extras.iter().any(|e| e.name == "c.txt"));
+        // Filter should exclude *.txt from extras if we set filter
+        let filtered = collect_extra_files(&src.to_string_lossy(), &dst.to_string_lossy(), Some("*.txt"));
+        assert_eq!(filtered.len(), 0, "filtered extras should be 0");
+        // Cleanup empty extra dirs after removing files
+        for e in &extras {
+            let _ = std::fs::remove_file(e.full_path.clone());
+        }
+        let removed = cleanup_extra_empty_dirs(&src.to_string_lossy(), &dst.to_string_lossy(), None);
+        assert_eq!(removed, 1, "extra_dir should be removed");
+        assert!(!dst.join("extra_dir").exists());
+        assert!(dst.join("sub").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// one in and re-run: cargo test --lib — --ignored --nocapture perf_usb
+    #[test]
+    #[ignore = "perf smoke (needs USB stick): cargo test --lib — --ignored --nocapture perf_usb"]
     fn perf_usb() {
         let Some(drive) = find_removable_drive() else {
-            println!("[perf:usb] SKIP — no removable drive detected. Plug in a USB stick and re-run.");
+            println!(
+                "[perf:usb] SKIP — no removable drive detected. Plug in a USB stick and re-run."
+            );
             return;
         };
         let free = free_bytes_available(&format!(r"{drive}\")).unwrap_or(0);
         assert!(free > 512 * 1024 * 1024, "USB drive {drive} needs >512 MB free");
 
-        let (dirs, fpd, fb) = (12, 150, 16 * 1024); // 1800 files ≈ 29 MB — kind to flash wear
+        let (dirs, fpd, fb) = (12, 150, 16 * 1024); // 1800 files ~ 29 MB — kind to flash wear
         let base = std::path::PathBuf::from(format!(r"{drive}\"));
         let fx = make_perf_fixture("usb", &base, dirs, fpd, fb);
         let src = fx.root.to_string_lossy().to_string();
         let total_mb = (dirs * fpd * fb) as f64 / (1024.0 * 1024.0);
         let src_files = count_files(fx.root.as_path());
 
-        let policy_w = pool::resolve_workers_for(0, "copy", 0, usize::MAX, src_files, (dirs * fpd * fb) as u64, true, false);
+        let policy_w = pool::resolve_workers_for(
+            0,
+            "copy",
+            0,
+            usize::MAX,
+            src_files,
+            (dirs * fpd * fb) as u64,
+            true,
+            false,
+        );
         assert_eq!(policy_w, 2, "auto policy must cap USB at 2 workers");
         println!("[perf:usb] drive {drive} — auto policy selects W={policy_w}");
 

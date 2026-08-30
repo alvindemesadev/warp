@@ -48,32 +48,6 @@ export type WarpSummary = {
   retriedOk?: number;
 };
 
-export type QueueJob = {
-  id: number;
-  source: string;
-  dest: string;
-  mode: Mode;
-  conflict: Conflict;
-  folderMode: FolderMode;
-  throttle: number;
-  verify: boolean;
-  /** Parallel workers: 0 = Auto, 2..=8 explicit. */
-  workers?: number;
-};
-
-export type Preset = {
-  name: string;
-  source: string;
-  dest: string;
-  mode: Mode;
-  conflict: Conflict;
-  folderMode: FolderMode;
-  throttle: number;
-  verify: boolean;
-  /** Parallel workers: 0 = Auto, 2..=8 explicit. */
-  workers?: number;
-};
-
 export type RecentEntry = {
   source: string;
   dest: string;

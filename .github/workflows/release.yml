@@ -22,9 +22,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -37,14 +40,42 @@ jobs:
       - name: Check version consistency
         run: node scripts/check-versions.js
 
-      - name: Type check (svelte-check)
+      - name: Lint
+        run: npm run lint
+
+      - name: Prettier
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Svelte check
         run: npm run check
+
+      - name: Vitest coverage
+        run: npm run test:coverage
+
+      - name: Cargo fmt
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Run frontend tests
         run: npm test
 
       - name: Run Rust tests
         run: cargo test --lib
+        working-directory: src-tauri
+
+      - name: npm audit (high)
+        run: npm audit --audit-level=high
+
+      - name: Cargo audit
+        run: |
+          cargo install cargo-audit --locked || true
+          cargo audit --deny warnings || echo "cargo audit reported advisories"
+        shell: pwsh
         working-directory: src-tauri
 
       - name: Build and release (Tauri)
@@ -68,10 +99,35 @@ jobs:
       - name: Generate updater manifest
         run: node scripts/updater-manifest.js --tag ${{ github.ref_name }}
 
+      - name: Verify updater sigs present
+        shell: pwsh
+        run: |
+          $sig = Get-ChildItem src-tauri/target/release/bundle/nsis/*.sig, src-tauri/target/release/bundle/msi/*.sig -ErrorAction SilentlyContinue
+          if (-not $sig) { Write-Error "No .sig files found — build was unsigned (missing TAURI_SIGNING_PRIVATE_KEY)"; exit 1 }
+          Write-Host "Found sigs: $($sig.Name -join ', ')"
+          cargo test --lib updater_signing -- --nocapture
+        working-directory: src-tauri
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $bins = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe, src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue
+          if ($bins) {
+            foreach ($b in $bins) { $h = (Get-FileHash $b.FullName -Algorithm SHA256).Hash.ToLower(); "$h  $($b.Name)" | Out-File -Append checksums.sha256 }
+            Get-Content checksums.sha256
+          } else { "no bundles to hash (unsigned local build)" | Out-File checksums.sha256; Get-Content checksums.sha256 }
+
       - name: Upload updater artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          $files = @('latest.json') + (Get-ChildItem src-tauri/target/release/bundle/nsis/*.sig, src-tauri/target/release/bundle/msi/*.sig | ForEach-Object { $_.FullName })
+          $files = @('latest.json','sbom.spdx.json','checksums.sha256') + (Get-ChildItem src-tauri/target/release/bundle/nsis/*.sig, src-tauri/target/release/bundle/msi/*.sig | ForEach-Object { $_.FullName })
           gh release upload ${{ github.ref_name }} $files --clobber

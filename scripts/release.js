@@ -33,7 +33,9 @@ const SITE_PUBLIC = path.join(SITE, "public");
 // Current version, read from tauri.conf.json (the source of truth that
 // release.js bumps). Every "from" pattern below uses this instead of a
 // hardcoded version, so successive releases keep working.
-const CURRENT = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8")).version;
+const CURRENT = JSON.parse(
+  fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8"),
+).version;
 
 const exeName = (v) => `Warp_${v}_x64-setup.exe`;
 const msiName = (v) => `Warp_${v}_x64_en-US.msi`;
@@ -74,7 +76,10 @@ function replaceIn(file, from, to, { all = true, note } = {}) {
   const p = path.resolve(ROOT, file);
   if (!fs.existsSync(p)) return;
   const s = read(p);
-  const re = typeof from === "string" ? new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), all ? "g" : "") : from;
+  const re =
+    typeof from === "string"
+      ? new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), all ? "g" : "")
+      : from;
   const next = s.replace(re, to);
   if (next === s) {
     if (note) console.log(`  ! ${file} — no match for ${note}`);
@@ -86,12 +91,18 @@ function run(cmd, args, opts = {}) {
   if (APPLY) {
     // Windows: npm is a .cmd shim that must run under cmd.exe; everything
     // else (git, node) spawns directly so argument quoting is preserved.
-    const r = process.platform === "win32" && cmd === "npm"
-      ? spawnSync("cmd.exe", ["/d", "/s", "/c", cmd, ...args], { stdio: "inherit", cwd: opts.cwd || ROOT })
-      : spawnSync(cmd, args, { stdio: "inherit", cwd: opts.cwd || ROOT });
+    const r =
+      process.platform === "win32" && cmd === "npm"
+        ? spawnSync("cmd.exe", ["/d", "/s", "/c", cmd, ...args], {
+            stdio: "inherit",
+            cwd: opts.cwd || ROOT,
+          })
+        : spawnSync(cmd, args, { stdio: "inherit", cwd: opts.cwd || ROOT });
     if (r.status !== 0) fail(`command failed: ${cmd} ${args.join(" ")}`);
   } else {
-    console.log(`  $ ${cmd} ${args.join(" ")}${opts.cwd && opts.cwd !== ROOT ? `  (cwd: ${rel(opts.cwd)})` : ""}`);
+    console.log(
+      `  $ ${cmd} ${args.join(" ")}${opts.cwd && opts.cwd !== ROOT ? `  (cwd: ${rel(opts.cwd)})` : ""}`,
+    );
   }
 }
 /** Run a command and return its stdout (only ever executed in apply mode). */
@@ -127,25 +138,57 @@ function copy(src, dest) {
 console.log(`\n=== 1/6 Bump version to ${version} ===`);
 
 // Main repo
-replaceIn("src-tauri/tauri.conf.json", `"version": "${CURRENT}"`, `"version": "${version}"`, { note: "tauri.conf.json version" });
+replaceIn("src-tauri/tauri.conf.json", `"version": "${CURRENT}"`, `"version": "${version}"`, {
+  note: "tauri.conf.json version",
+});
 replaceIn("src-tauri/Cargo.toml", `version = "${CURRENT}"`, `version = "${version}"`);
-replaceIn("src-tauri/Cargo.lock", new RegExp(`name = "warp"\\r?\\nversion = "${CURRENT}"`), `name = "warp"\nversion = "${version}"`, { all: false });
+replaceIn(
+  "src-tauri/Cargo.lock",
+  new RegExp(`name = "warp"\\r?\\nversion = "${CURRENT}"`),
+  `name = "warp"\nversion = "${version}"`,
+  { all: false },
+);
 replaceIn("package.json", `"version": "${CURRENT}"`, `"version": "${version}"`);
-replaceIn("src/routes/+page.svelte", `let APP_VERSION = $state("${CURRENT}")`, `let APP_VERSION = $state("${version}")`);
+replaceIn(
+  "src/routes/+page.svelte",
+  `let APP_VERSION = $state("${CURRENT}")`,
+  `let APP_VERSION = $state("${version}")`,
+);
 replaceIn("README.md", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
 replaceIn("README.md", `git tag v${CURRENT}`, `git tag v${version}`);
 // Version badge (shields.io) — keep it in sync with the release.
-replaceIn("README.md", new RegExp(`badge/Version-${CURRENT.replace(/\./g, "\\.")}-339dff`), `badge/Version-${version}-339dff`, { all: true });
-replaceIn("scripts/readme-download.js", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
+replaceIn(
+  "README.md",
+  new RegExp(`badge/Version-${CURRENT.replace(/\./g, "\\.")}-339dff`),
+  `badge/Version-${version}-339dff`,
+  { all: true },
+);
+replaceIn("scripts/readme-download.js", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, {
+  all: true,
+});
 replaceIn(".github/workflows/release.yml", `git tag v${CURRENT}`, `git tag v${version}`);
-replaceIn("package-lock.json", new RegExp(`"name": "warp",\\r?\\n  "version": "${CURRENT}"`), `"name": "warp",\n  "version": "${version}"`);
+replaceIn(
+  "package-lock.json",
+  new RegExp(`"name": "warp",\\r?\\n  "version": "${CURRENT}"`),
+  `"name": "warp",\n  "version": "${version}"`,
+);
 
 // warp-site repo (its own git root)
 if (fs.existsSync(path.join(SITE, ".git"))) {
   replaceIn("warp-site/package.json", `"version": "${CURRENT}"`, `"version": "${version}"`);
-  replaceIn("warp-site/package-lock.json", new RegExp(`"name": "warp-site",\\r?\\n  "version": "${CURRENT}"`), `"name": "warp-site",\n  "version": "${version}"`);
-  replaceIn("warp-site/package-lock.json", new RegExp(`"name": "warp-site",\\r?\\n      "version": "${CURRENT}"`), `"name": "warp-site",\n      "version": "${version}"`); // packages[""] entry
-  replaceIn("warp-site/src/components/Download.tsx", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
+  replaceIn(
+    "warp-site/package-lock.json",
+    new RegExp(`"name": "warp-site",\\r?\\n  "version": "${CURRENT}"`),
+    `"name": "warp-site",\n  "version": "${version}"`,
+  );
+  replaceIn(
+    "warp-site/package-lock.json",
+    new RegExp(`"name": "warp-site",\\r?\\n      "version": "${CURRENT}"`),
+    `"name": "warp-site",\n      "version": "${version}"`,
+  ); // packages[""] entry
+  replaceIn("warp-site/src/components/Download.tsx", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, {
+    all: true,
+  });
   replaceIn("warp-site/README.md", `Warp_${CURRENT}_x64`, `Warp_${version}_x64`, { all: true });
 } else {
   console.log(`  ! warp-site/.git not found — skipping site version bump`);
@@ -155,7 +198,8 @@ if (fs.existsSync(path.join(SITE, ".git"))) {
 function ensureTagIsFree(repoDir) {
   const cwd = repoDir === ROOT ? ROOT : SITE;
   const r = spawnSync("git", ["tag", "-l", `v${version}`], { cwd, encoding: "utf8" });
-  if ((r.stdout || "").trim()) fail(`tag v${version} already exists in ${rel(cwd)} — delete it or bump the version`);
+  if ((r.stdout || "").trim())
+    fail(`tag v${version} already exists in ${rel(cwd)} — delete it or bump the version`);
 }
 ensureTagIsFree(ROOT);
 if (fs.existsSync(path.join(SITE, ".git"))) ensureTagIsFree(SITE);
@@ -185,7 +229,8 @@ for (const src of [exePath, msiPath]) {
     // the apply-mode build. Verify the old installer exists instead, so we
     // know the build toolchain has produced artifacts before.
     const old = path.join(path.dirname(src), path.basename(src).replace(version, CURRENT));
-    if (!fs.existsSync(old)) fail(`no installer found in ${rel(path.dirname(src))} (run build:win first)`);
+    if (!fs.existsSync(old))
+      fail(`no installer found in ${rel(path.dirname(src))} (run build:win first)`);
     continue;
   }
   copy(src, path.join(DOCS, path.basename(src)));
@@ -255,4 +300,6 @@ if (fs.existsSync(path.join(SITE, ".git"))) {
   releaseRepo(SITE);
 }
 
-console.log(`\n✔ Release ${version} ${APPLY ? "released" : "DRY-RUN — run with --apply to execute"}.`);
+console.log(
+  `\n✔ Release ${version} ${APPLY ? "released" : "DRY-RUN — run with --apply to execute"}.`,
+);

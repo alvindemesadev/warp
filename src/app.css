@@ -22,16 +22,27 @@ body {
   min-height: 100vh;
   /* The app font lives on :root as --font-sf but is applied per-element;
      fixed-position overlays (modals, toasts) escape <main>, so default the
-     body to the SF stack too — otherwise they fall back to a serif system font. */
+     body to the SF stack too -- otherwise they fall back to a serif system font. */
   font-family: var(--font-sf);
   -webkit-font-smoothing: antialiased;
 }
 
-h1, h2, h3, h4, p, figure, blockquote, dl, dd {
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+dl,
+dd {
   margin: 0;
 }
 
-button, input, select, textarea {
+button,
+input,
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -46,12 +57,19 @@ button {
   display: contents;
 }
 
-img, svg, video, canvas, audio, iframe, embed, object {
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
   display: block;
   vertical-align: middle;
 }
 
-/* SF Pro stack — falls back gracefully */
+/* SF Pro stack -- falls back gracefully */
 :root {
   --font-sf: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
 
@@ -62,7 +80,7 @@ img, svg, video, canvas, audio, iframe, embed, object {
   --glass-active: rgba(255, 255, 255, 0.03);
 
   /* System accent colors */
-  --accent: #0a84ff;       /* macOS Blue */
+  --accent: #0a84ff; /* macOS Blue */
   --accent-hover: #409cff;
   --green: #30d158;
   --red: #ff453a;
@@ -72,39 +90,66 @@ img, svg, video, canvas, audio, iframe, embed, object {
   /* Surfaces */
   --surface-0: #000000;
   --surface-1: rgba(28, 28, 30, 0.85);
-  --surface-2: rgba(44, 44, 46, 0.60);
-  --surface-3: rgba(58, 58, 60, 0.50);
+  --surface-2: rgba(44, 44, 46, 0.6);
+  --surface-3: rgba(58, 58, 60, 0.5);
 
   /* Text */
   --text-primary: rgba(255, 255, 255, 0.92);
-  --text-secondary: rgba(255, 255, 255, 0.50);
+  --text-secondary: rgba(255, 255, 255, 0.5);
   --text-tertiary: rgba(255, 255, 255, 0.28);
 }
 
 @keyframes shimmer {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
 }
 
 @keyframes fadeUp {
-  0%   { opacity: 0; transform: translateY(8px) scale(0.98); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes popIn {
-  0%   { opacity: 0; transform: scale(0.92); }
-  60%  { transform: scale(1.02); }
-  100% { opacity: 1; transform: scale(1); }
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  60% {
+    transform: scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes pulse-soft {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.55; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
 }
 
 @keyframes spin-smooth {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .animate-shimmer {
@@ -126,4 +171,41 @@ img, svg, video, canvas, audio, iframe, embed, object {
 
 .animate-spin-smooth {
   animation: spin-smooth 1.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer,
+  .animate-fade-up,
+  .animate-pop-in,
+  .animate-pulse-soft,
+  .animate-spin-smooth {
+    animation: none !important;
+  }
+  .pulse {
+    animation: none !important;
+  }
+  .fill--indeterminate {
+    animation: none !important;
+  }
+  .spinner {
+    animation: none !important;
+  }
+}
+
+/* Light theme -- gated behind prefers-color-scheme, keeps dark as default */
+@media (prefers-color-scheme: light) {
+  :root {
+    --glass-bg: rgba(255, 255, 255, 0.78);
+    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-hover: rgba(0, 0, 0, 0.04);
+    --surface-0: #f5f5f7;
+    --surface-1: rgba(255, 255, 255, 0.92);
+    --surface-2: rgba(242, 242, 247, 0.85);
+    --text-primary: rgba(0, 0, 0, 0.92);
+    --text-secondary: rgba(0, 0, 0, 0.55);
+    --text-tertiary: rgba(0, 0, 0, 0.32);
+  }
+  body {
+    background: #f5f5f7;
+  }
 }

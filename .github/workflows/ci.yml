@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  pull_request:
+    branches: ["*"]
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check version consistency
+        run: node scripts/check-versions.js
+
+      - name: Check anchors
+        run: node scripts/check-anchors.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Prettier
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Svelte check
+        run: npm run check
+
+      - name: Vitest
+        run: npm run test:coverage
+
+      - name: Playwright a11y
+        run: npx playwright test e2e/a11y.spec.ts --project=chromium
+
+      - name: Cargo fmt
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      - name: npm audit (high)
+        run: npm audit --audit-level=high
+
+      - name: Cargo audit
+        run: |
+          cargo install cargo-audit --locked || true
+          cargo audit --deny warnings || echo "cargo audit found advisories (see logs)"
+        shell: pwsh

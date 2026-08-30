@@ -15,7 +15,11 @@ export const THROTTLE_OPTIONS = [
 export const WORKER_OPTIONS = [
   { value: 0, label: "Auto", title: "Pick workers from the drive types involved (recommended)" },
   { value: 2, label: "2", title: "2 parallel folder workers" },
-  { value: 4, label: "4", title: "4 parallel folder workers — best on NVMe/SSD with many small files" },
+  {
+    value: 4,
+    label: "4",
+    title: "4 parallel folder workers — best on NVMe/SSD with many small files",
+  },
   { value: 6, label: "6", title: "6 parallel folder workers — maximum parallelism" },
   { value: 8, label: "8", title: "8 parallel folder workers — may contend on slower disks" },
 ] as const;
@@ -53,5 +57,5 @@ export function describeJob(mode: Mode, verify: boolean, throttle: number): stri
   const parts: string[] = [mode];
   if (verify) parts.push("verify");
   if (throttle) parts.push(`${throttle} MB/s`);
-  return parts.join(" · ");
+  return parts.join(" - ");
 }

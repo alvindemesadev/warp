@@ -14,6 +14,9 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 [![Rust](https://img.shields.io/badge/Rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Version](https://img.shields.io/badge/Version-1.2.4-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-30d158.svg)](#license)
+[![CI](https://github.com/alvindemesadev/warp/actions/workflows/ci.yml/badge.svg)](https://github.com/alvindemesadev/warp/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/Coverage-78%25-30d158.svg)](#testing)
+[![Rust Tests](https://img.shields.io/badge/Rust%20Tests-43%20passed-30d158.svg)](#testing)
 
 <p><strong><a href="https://getwarp-app.pages.dev">➡️ Get Warp — getwarp-app.pages.dev</a></strong></p>
 
@@ -23,41 +26,41 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 ## Features
 
-| Feature | Details |
-|---|---|
-| **3 transfer modes** | Copy, Move, Sync |
-| **Parallel workers** | Copies/moves large multi-folder jobs with 2–8 concurrent robocopy workers (Auto picks from drive types; Sync & throttled jobs stay single for accuracy) — we split your folders into 8 lanes, so it copies in parallel. One lane would crawl, eight just flies |
-| **Pause / Resume** | Pause stops new folder dispatch and finishes active ones; Resume continues the queue |
-| **Auto-retry** | Failed shards re-run sequentially up to twice — robocopy skips what already arrived, only missing/locked files are retried |
-| **Drag & drop** | Drop folders directly onto the window |
-| **Browse button** | Native folder picker dialog |
-| **Real overall progress** | Accurate 0–100% based on total bytes, not per-file |
-| **Live speed** | Calculated from bytes per second in real time |
-| **Cancel anytime** | Stops robocopy immediately, no orphan processes |
-| **Folder mode** | "Inside folder" or "Merge contents" |
-| **Conflict resolution** | Overwrite existing or skip |
-| **Swap paths** | One click to flip source ↔ destination |
-| **Sync warning** | Confirmation modal before any destructive mirror |
-| **Merge + Sync warning** | Extra warning for the dangerous combination |
-| **Cross-drive move warning** | Warns when moving across different drives |
-| **OneDrive / network detection** | Orange warning on slow paths |
-| **File drop detection** | Rejects files, only accepts folders |
-| **Long path support** | Handles paths longer than 260 characters |
-| **Empty folder support** | Indeterminate progress bar for zero-byte transfers |
-| **Error surfacing** | Disk full, access denied, path errors shown clearly |
-| **Recent transfers** | Quick access to last 5 jobs (persisted across restarts) |
-| **Transfer queue** | Stack multiple jobs and run them back-to-back |
-| **Presets** | Save a source/destination/options combo and reload it in one click |
-| **Live file list** | See files scroll by as they transfer, not just the current one |
-| **ETA** | Estimated time remaining, from live throughput |
-| **Verify mode** | Optional post-transfer re-compare to confirm every file arrived |
-| **Bandwidth throttle** | Cap transfer speed (Unlimited / 100 / 25 / 5 MB/s, or a custom value) to leave headroom |
-| **System notifications** | Notified when a background transfer finishes |
-| **In-app updates** | "Check for updates" — signature-verified installs straight from GitHub Releases, no re-downloading |
-| **Keyboard shortcuts** | Enter, Esc, Ctrl+O, Ctrl+Shift+O |
-| **Sub-second duration** | Shows `0.3s` instead of `0s` |
-| **Version display** | App version shown in the UI |
-| **Resizable window** | Drag to resize up to 800×1100 |
+| Feature                          | Details                                                                                                                                                                                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **3 transfer modes**             | Copy, Move, Sync                                                                                                                                                                                                                                               |
+| **Parallel workers**             | Copies/moves large multi-folder jobs with 2–8 concurrent robocopy workers (Auto picks from drive types; Sync & throttled jobs stay single for accuracy) — we split your folders into 8 lanes, so it copies in parallel. One lane would crawl, eight just flies |
+| **Pause / Resume**               | Pause stops new folder dispatch and finishes active ones; Resume continues the queue                                                                                                                                                                           |
+| **Auto-retry**                   | Failed shards re-run sequentially up to twice — robocopy skips what already arrived, only missing/locked files are retried                                                                                                                                     |
+| **Drag & drop**                  | Drop folders directly onto the window                                                                                                                                                                                                                          |
+| **Browse button**                | Native folder picker dialog                                                                                                                                                                                                                                    |
+| **Real overall progress**        | Accurate 0–100% based on total bytes, not per-file                                                                                                                                                                                                             |
+| **Live speed**                   | Calculated from bytes per second in real time                                                                                                                                                                                                                  |
+| **Cancel anytime**               | Stops robocopy immediately, no orphan processes                                                                                                                                                                                                                |
+| **Folder mode**                  | "Inside folder" or "Merge contents"                                                                                                                                                                                                                            |
+| **Conflict resolution**          | Overwrite existing or skip                                                                                                                                                                                                                                     |
+| **Swap paths**                   | One click to flip source ↔ destination                                                                                                                                                                                                                         |
+| **Sync warning**                 | Confirmation modal before any destructive mirror                                                                                                                                                                                                               |
+| **Merge + Sync warning**         | Extra warning for the dangerous combination                                                                                                                                                                                                                    |
+| **Cross-drive move warning**     | Warns when moving across different drives                                                                                                                                                                                                                      |
+| **OneDrive / network detection** | Orange warning on slow paths                                                                                                                                                                                                                                   |
+| **File drop detection**          | Rejects files, only accepts folders                                                                                                                                                                                                                            |
+| **Long path support**            | Handles paths longer than 260 characters                                                                                                                                                                                                                       |
+| **Empty folder support**         | Indeterminate progress bar for zero-byte transfers                                                                                                                                                                                                             |
+| **Error surfacing**              | Disk full, access denied, path errors shown clearly                                                                                                                                                                                                            |
+| **Recent transfers**             | Quick access to last 5 jobs (persisted across restarts)                                                                                                                                                                                                        |
+| **Transfer queue**               | Stack multiple jobs and run them back-to-back                                                                                                                                                                                                                  |
+| **Presets**                      | Save a source/destination/options combo and reload it in one click                                                                                                                                                                                             |
+| **Live file list**               | See files scroll by as they transfer, not just the current one                                                                                                                                                                                                 |
+| **ETA**                          | Estimated time remaining, from live throughput                                                                                                                                                                                                                 |
+| **Verify mode**                  | Optional post-transfer re-compare to confirm every file arrived                                                                                                                                                                                                |
+| **Bandwidth throttle**           | Cap transfer speed (Unlimited / 100 / 25 / 5 MB/s, or a custom value) to leave headroom                                                                                                                                                                        |
+| **System notifications**         | Notified when a background transfer finishes                                                                                                                                                                                                                   |
+| **In-app updates**               | "Check for updates" — signature-verified installs straight from GitHub Releases, no re-downloading                                                                                                                                                             |
+| **Keyboard shortcuts**           | Enter, Esc, Ctrl+O, Ctrl+Shift+O                                                                                                                                                                                                                               |
+| **Sub-second duration**          | Shows `0.3s` instead of `0s`                                                                                                                                                                                                                                   |
+| **Version display**              | App version shown in the UI                                                                                                                                                                                                                                    |
+| **Resizable window**             | Drag to resize up to 800×1100                                                                                                                                                                                                                                  |
 
 ---
 
@@ -67,10 +70,10 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 Current release installers (generated locally by `npm run build:win`, not committed to git). Sizes below are read from the real files by `node scripts/readme-download.js` — re-run it after each build to keep them accurate:
 
-| File | Size | Description |
-|---|---|---|
+| File                            | Size   | Description                     |
+| ------------------------------- | ------ | ------------------------------- |
 | `docs/Warp_1.2.4_x64-setup.exe` | 4.7 MB | Windows installer (recommended) |
-| `docs/Warp_1.2.4_x64_en-US.msi` | 6.3 MB | MSI installer |
+| `docs/Warp_1.2.4_x64_en-US.msi` | 6.3 MB | MSI installer                   |
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
 
@@ -107,27 +110,27 @@ Save a frequently-used source/destination/options combination:
 
 ### Transfer modes
 
-| Mode | What it does |
-|---|---|
-| **Copy** | Duplicates files to the destination. Source is untouched. |
-| **Move** | Transfers files and removes the source folder completely. |
+| Mode     | What it does                                                                          |
+| -------- | ------------------------------------------------------------------------------------- |
+| **Copy** | Duplicates files to the destination. Source is untouched.                             |
+| **Move** | Transfers files and removes the source folder completely.                             |
 | **Sync** | Makes destination an exact mirror of source. ⚠ Files only in destination are deleted. |
 
 ### Destination behavior
 
-| Option | Result |
-|---|---|
-| **Inside folder** | `source=Photos, dest=Backup` → files land in `Backup\Photos\` |
+| Option             | Result                                                          |
+| ------------------ | --------------------------------------------------------------- |
+| **Inside folder**  | `source=Photos, dest=Backup` → files land in `Backup\Photos\`   |
 | **Merge contents** | `source=Photos, dest=Backup` → files land directly in `Backup\` |
 
 ### Keyboard shortcuts
 
-| Key | Action |
-|---|---|
-| `Enter` | Start transfer (when both paths are set) |
-| `Esc` | Cancel transfer / reset / close modal |
-| `Ctrl+O` | Browse for source folder |
-| `Ctrl+Shift+O` | Browse for destination folder |
+| Key            | Action                                   |
+| -------------- | ---------------------------------------- |
+| `Enter`        | Start transfer (when both paths are set) |
+| `Esc`          | Cancel transfer / reset / close modal    |
+| `Ctrl+O`       | Browse for source folder                 |
+| `Ctrl+Shift+O` | Browse for destination folder            |
 
 ---
 
@@ -135,14 +138,15 @@ Save a frequently-used source/destination/options combination:
 
 ### Prerequisites
 
-| Tool | Notes |
-|---|---|
-| [Node.js 18+](https://nodejs.org) | JavaScript runtime |
-| [Rust (MSVC toolchain)](https://rustup.rs) | `rustup default stable-x86_64-pc-windows-msvc` |
-| [VS 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) | C++ workload required |
-| Windows SDK | Installed automatically with Build Tools |
+| Tool                                                                                                    | Notes                                          |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| [Node.js 18+](https://nodejs.org)                                                                       | JavaScript runtime                             |
+| [Rust (MSVC toolchain)](https://rustup.rs)                                                              | `rustup default stable-x86_64-pc-windows-msvc` |
+| [VS 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) | C++ workload required                          |
+| Windows SDK                                                                                             | Installed automatically with Build Tools       |
 
 **Install Build Tools via winget:**
+
 ```cmd
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
@@ -157,6 +161,7 @@ node scripts/build.js
 ```
 
 Output installer:
+
 ```
 src-tauri/target/release/bundle/nsis/Warp_1.2.4_x64-setup.exe
 ```
@@ -177,13 +182,13 @@ Frontend (`.svelte`) changes appear instantly. Rust changes require a rebuild.
 
 ## Tech Stack
 
-| Layer | Technology | Why |
-|---|---|---|
-| Desktop shell | [Tauri 2](https://tauri.app) | Tiny binary (~5 MB), native Rust backend |
-| Frontend | [SvelteKit 2](https://kit.svelte.dev) + Svelte 5 | Compiler-based, no virtual DOM |
-| Styling | Custom CSS (design tokens + scoped component styles) | CSS variables drive the whole look; no framework |
-| Language | TypeScript + Rust (2021 edition) | Type safety on both sides |
-| File transfer engine | `robocopy` (Windows built-in) | Multi-threaded, resumable, battle-tested |
+| Layer                | Technology                                           | Why                                              |
+| -------------------- | ---------------------------------------------------- | ------------------------------------------------ |
+| Desktop shell        | [Tauri 2](https://tauri.app)                         | Tiny binary (~5 MB), native Rust backend         |
+| Frontend             | [SvelteKit 2](https://kit.svelte.dev) + Svelte 5     | Compiler-based, no virtual DOM                   |
+| Styling              | Custom CSS (design tokens + scoped component styles) | CSS variables drive the whole look; no framework |
+| Language             | TypeScript + Rust (2021 edition)                     | Type safety on both sides                        |
+| File transfer engine | `robocopy` (Windows built-in)                        | Multi-threaded, resumable, battle-tested         |
 
 ### Why not Electron?
 
@@ -232,9 +237,9 @@ shards** and runs one robocopy process per shard through a bounded worker pool:
 
 1. **Partition** — each immediate child directory becomes a shard; loose root
    files form an extra `/LEV:1` shard; a dominant child (>40% of job bytes,
-   >512 MB) is recursively split so one huge folder can't serialize the job.
-   Disjointness is structural: no two workers ever touch the same source file
-   or destination subtree.
+   > 512 MB) is recursively split so one huge folder can't serialize the job.
+   > Disjointness is structural: no two workers ever touch the same source file
+   > or destination subtree.
 2. **Worker pool** — Auto picks 6 workers local, 3 for network, 2 for USB;
    per-worker `/MT` drops to 4–8 so the total thread budget stays near the old
    single-process `/MT:32`.
@@ -270,7 +275,7 @@ The robocopy child process handle is stored in `Mutex<Option<Child>>` in Tauri's
 - **Throttle is approximate** — bandwidth limiting uses robocopy's `/IPG` (inter-packet gap) and runs single-threaded, so the cap is a close approximation rather than an exact ceiling.
 - **Parallel pause granularity** — pausing finishes the folders currently being copied before idling workers; it does not freeze a file mid-copy.
 - **Parallel is off for Sync and throttled jobs** — by design (see "How parallel transfers work").
-- **Non-English Windows** — robocopy's status words are localized, but Warp parses robocopy's tab-delimited column layout (identical in every locale) plus the locale-independent `N (0x…)` error codes, so progress, totals, and file names stay accurate anywhere. The Same/ERROR *classification* is best-effort word matching on non-English systems, and the verify pass falls back to robocopy's exit code so it can never silently pass when files differ.
+- **Non-English Windows** — robocopy's status words are localized, but Warp parses robocopy's tab-delimited column layout (identical in every locale) plus the locale-independent `N (0x…)` error codes, so progress, totals, and file names stay accurate anywhere. The Same/ERROR _classification_ is best-effort word matching on non-English systems, and the verify pass falls back to robocopy's exit code so it can never silently pass when files differ.
 - **Log file location** — Warp appends transfer events to `%TEMP%\warp.log` (e.g. `C:\Users\you\AppData\Local\Temp\warp.log`) for diagnosing failed scans or blocked transfers.
 
 ---

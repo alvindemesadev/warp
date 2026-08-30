@@ -47,7 +47,9 @@ try {
   repo = m ? m[1] : undefined;
 } catch {}
 if (!repo) {
-  fail("could not determine the GitHub repo — set origin: `git remote add origin https://github.com/OWNER/REPO.git`");
+  fail(
+    "could not determine the GitHub repo — set origin: `git remote add origin https://github.com/OWNER/REPO.git`",
+  );
 }
 
 // ── Signed artifact ──────────────────────────────────────────────────────────
@@ -58,7 +60,7 @@ const sigPath = path.join(nsisDir, `${exeName}.sig`);
 if (!fs.existsSync(sigPath)) {
   fail(
     `no updater signature at ${path.relative(ROOT, sigPath)}\n` +
-    "The build must run with TAURI_SIGNING_PRIVATE_KEY set and createUpdaterArtifacts enabled."
+      "The build must run with TAURI_SIGNING_PRIVATE_KEY set and createUpdaterArtifacts enabled.",
   );
 }
 

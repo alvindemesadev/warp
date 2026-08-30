@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { isSpecialPath, normalizeThrottleInput, isPresetThrottle, THROTTLE_OPTIONS, normalizeWorkersInput } from "./transfer";
+import {
+  isSpecialPath,
+  normalizeThrottleInput,
+  isPresetThrottle,
+  THROTTLE_OPTIONS,
+  normalizeWorkersInput,
+} from "./transfer";
 
 describe("isSpecialPath", () => {
   it("detects OneDrive and network", () => {

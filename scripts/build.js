@@ -33,14 +33,20 @@ if (!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
   const conf = JSON.parse(fs.readFileSync(path.join(ROOT, "src-tauri/tauri.conf.json"), "utf8"));
   if (conf?.bundle?.createUpdaterArtifacts) {
-    console.warn(
-      "\nWARNING: createUpdaterArtifacts is enabled but no signing key was found.\n" +
+    const msg =
+      `\nWARNING: createUpdaterArtifacts is enabled but no signing key was found.\n` +
       `  Expected: ${keyPath} (or TAURI_SIGNING_PRIVATE_KEY env var)\n` +
-      "  The build will succeed but produce NO .sig files, so in-app updates won't work.\n" +
-      "  Generate one with: npm run tauri signer generate -w ~/.tauri/warp.key --ci\n" +
-      "  Then set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty) as GitHub secrets.\n" +
-      "  See README.md \"In-app updates\" + https://v2.tauri.app/plugin/updater/\n"
-    );
+      `  The build will succeed but produce NO .sig files, so in-app updates won't work.\n` +
+      `  Generate one with: npm run tauri signer generate -w ~/.tauri/warp.key --ci\n` +
+      `  Then set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty) as GitHub secrets.\n` +
+      `  See README.md "In-app updates" + https://v2.tauri.app/plugin/updater/\n`;
+    if (process.env.CI) {
+      console.error(msg);
+      console.error("Failing CI build because updater artifacts would be unsigned.");
+      process.exit(1);
+    } else {
+      console.warn(msg);
+    }
   }
 }
 
@@ -79,7 +85,7 @@ if (!vcvars) {
   console.error("\nERROR: Could not find vcvars64.bat");
   console.error("Install Visual Studio 2022 Build Tools with the C++ workload:");
   console.error(
-    "  winget install Microsoft.VisualStudio.2022.BuildTools --override \"--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\""
+    '  winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"',
   );
   process.exit(1);
 }

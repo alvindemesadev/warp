@@ -1,0 +1,13 @@
+build
+.svelte-kit
+src-tauri/target
+src-tauri/gen
+node_modules
+warp-site
+static
+dist
+docs/*.exe
+docs/*.msi
+coverage
+test-results
+playwright-report

@@ -1,24 +1,25 @@
 # Warp — High-Speed File Transfer: Technical Whitepaper
 
-**Version:** 1.2.2  
+**Version:** 1.2.4  
 **Author:** Alvin  
 **Date:** August 2026  
 **Repo:** https://github.com/alvindemesadev/warp  
-**License:** MIT  
+**License:** MIT
 
 ---
 
 ## Abstract
 
-Warp is a minimal Windows desktop app that wraps the built-in `robocopy` engine in a modern Tauri + Rust + Svelte interface. It adds accurate byte-level progress, live speed/ETA, parallel sharded transfers, pause/resume, verify, throttling, and safe path handling — without reimplementing filesystem copying. This paper explains *how* Warp works, *why* those design choices were made, and where the limits are.
+Warp is a minimal Windows desktop app that wraps the built-in `robocopy` engine in a modern Tauri + Rust + Svelte interface. It adds accurate byte-level progress, live speed/ETA, parallel sharded transfers, pause/resume, verify, throttling, and safe path handling — without reimplementing filesystem copying. This paper explains _how_ Warp works, _why_ those design choices were made, and where the limits are.
 
-> Tagline: *We split your folders into 8 lanes, so it copies in parallel. One lane would crawl, eight just flies.*
+> Tagline: _We split your folders into 8 lanes, so it copies in parallel. One lane would crawl, eight just flies._
 
 ---
 
 ## 1. Introduction & Goals
 
 Typical file copies on Windows (Explorer, `copy`/`xcopy`) lack:
+
 - true total-bytes progress (they count files, not bytes)
 - live throughput and ETA
 - safe pause/resume and cancel without orphans
@@ -40,17 +41,17 @@ Non-goals (v1.x): macOS/Linux support, hash-based verification, admin-elevated c
 
 `robocopy` ships with every Windows since Vista. Properties Warp relies on:
 
-| Capability | Flag used | Why it matters |
-|---|---|---|
-| List-only dry run | `/L` | Scan pass without copying |
-| Byte-accurate sizes | `/BYTES` | Progress from bytes, not files |
-| Multi-threaded copy | `/MT:32` (or 4–8) | Throughput |
-| Long paths | `/256` + `\\?\` prefix | Bypass `MAX_PATH` 260 |
-| Junction exclusion | `/XJ /XJD` | Prevent symlink cycles |
-| Inter-packet gap | `/IPG:n` | Bandwidth throttling |
-| Restartable mode | `/Z` | USB / large-file resilience |
-| Mirror | `/MIR` | Sync mode |
-| Skip existing | `/XO /XN` | Conflict = skip |
+| Capability          | Flag used              | Why it matters                 |
+| ------------------- | ---------------------- | ------------------------------ |
+| List-only dry run   | `/L`                   | Scan pass without copying      |
+| Byte-accurate sizes | `/BYTES`               | Progress from bytes, not files |
+| Multi-threaded copy | `/MT:32` (or 4–8)      | Throughput                     |
+| Long paths          | `/256` + `\\?\` prefix | Bypass `MAX_PATH` 260          |
+| Junction exclusion  | `/XJ /XJD`             | Prevent symlink cycles         |
+| Inter-packet gap    | `/IPG:n`               | Bandwidth throttling           |
+| Restartable mode    | `/Z`                   | USB / large-file resilience    |
+| Mirror              | `/MIR`                 | Sync mode                      |
+| Skip existing       | `/XO /XN`              | Conflict = skip                |
 
 `robocopy` has 20+ years of hardening for locked files, retries (`/R:3 /W:5`), and accurate exit codes (bitmask `0–16`).
 
@@ -60,13 +61,13 @@ Non-goals (v1.x): macOS/Linux support, hash-based verification, admin-elevated c
 
 ## 3. Why Tauri + Svelte + Rust?
 
-| Layer | Choice | Rationale |
-|---|---|---|
-| Shell | Tauri 2 (`src-tauri/tauri.conf.json:4`) | Native WebView2, <5 MB overhead, Rust IPC |
-| Frontend | SvelteKit 2 + Svelte 5 (`package.json:29`) | Compiler, no VDOM, <50 KB JS |
-| Styling | Custom CSS tokens `src/app.css` | No framework, single theme source |
-| Backend | Rust 2021 (`Cargo.toml:6`) | Handles `Child` processes, parsing, FS walks |
-| IPC | `invoke` + `emit` events | `warp-progress`, `warp-error`, `warp-verifying` |
+| Layer    | Choice                                     | Rationale                                       |
+| -------- | ------------------------------------------ | ----------------------------------------------- |
+| Shell    | Tauri 2 (`src-tauri/tauri.conf.json:4`)    | Native WebView2, <5 MB overhead, Rust IPC       |
+| Frontend | SvelteKit 2 + Svelte 5 (`package.json:29`) | Compiler, no VDOM, <50 KB JS                    |
+| Styling  | Custom CSS tokens `src/app.css`            | No framework, single theme source               |
+| Backend  | Rust 2021 (`Cargo.toml:6`)                 | Handles `Child` processes, parsing, FS walks    |
+| IPC      | `invoke` + `emit` events                   | `warp-progress`, `warp-error`, `warp-verifying` |
 
 **Why not Electron?** `README.md:188` — Electron bundles Chromium (~150 MB). Warp is 4.7 MB setup / 6.3 MB MSI.
 
@@ -102,8 +103,9 @@ Frontend is a single page `src/routes/+page.svelte:1` — Svelte 5 runes (`$stat
 ```
 
 **Key invariants:**
+
 - All long-running work runs on `spawn_blocking` (`lib.rs:714`) — never blocks Tokio IPC.
-- Children are tracked in `TransferControl.children: Mutex<HashMap<u64, Child>>` (`lib.rs:25`) — cancel/close kills *all*.
+- Children are tracked in `TransferControl.children: Mutex<HashMap<u64, Child>>` (`lib.rs:25`) — cancel/close kills _all_.
 - Frontend and backend share types `WarpProgress` / `WarpSummary` (`lib.rs:90,111`) via serde `camelCase`.
 
 ---
@@ -135,6 +137,7 @@ args = [source, effective_dest, /E /NP /R:3 /W:5 /BYTES /NJH /NJS /256 /XJ /XJD 
 ```
 
 `/MT` policy (`lib.rs:998`):
+
 - `throttle >= 25 MB/s`: `/IPG:half` + `/MT:4` (NVMe-friendly cap)
 - `throttle < 25`: `/IPG:n` single-thread (precise)
 - USB (removable detection `is_removable_drive` `lib.rs:144` via `GetDriveTypeW`): `/MT:4 /Z`
@@ -166,6 +169,7 @@ Emitter: `window.emit("warp-progress", WarpProgress{...})` (`lib.rs:1193`) — f
 ### 6.1 When it runs
 
 Cheap gate `should_attempt_parallel` (`lib.rs:852`):
+
 - Hard **no** if `mode == "sync"` (`/MIR` concurrent deletes unsafe) or `throttle > 0` (`/IPG` per-process).
 - If `workers > 1` explicit: **yes** (bypasses size heuristics, still respects hard gates).
 - Else Auto: needs `>=400 files` **and** `>=256 MiB` **and** `>=2` top-level dirs (`shards::top_level_dir_count`).
@@ -213,6 +217,7 @@ Coordination (outline, `lib.rs:919` + `pool.rs`):
 ### 6.4 Aggregate Progress (Parallel)
 
 `Tracker::ingest` (`pool.rs:154`) mirrors sequential logic:
+
 - `FileHeader`: `files_seen++`, `transferred/skipped/failed`, `note_bytes` immediately (parallel **never defers** large files — concurrent large files would misattribute a single pending slot, comment `pool.rs:44`).
 - `Percent`/`Speed` ignored when `defer_large==false` (`pool.rs:189`).
 - `note_bytes` (`pool.rs:85`) drifts `total_bytes` upward if observed > scan.
@@ -255,6 +260,7 @@ Tests: `lib.rs` + `pool::tests` + `shards::tests` cover en_US and simulate non-E
 Optional checkbox (`verify` bool `lib.rs:707`).
 
 `verify_transfer` (`lib.rs:663`):
+
 ```
 robocopy source effective_dest /L /E /BYTES /NJH /NJS /NP → parse
 any FileHeader with !is_same && !is_error → mismatches++
@@ -275,6 +281,7 @@ exit code 0 → 0 else max(mismatches,1)
 - Sequential registers `SEQ_CHILD_ID=1` (`lib.rs:18`), parallel registers per shard.
 
 Commands:
+
 - `cancel_warp` (`lib.rs:422`): clears `paused`, `kill_all`.
 - `pause_warp` (`lib.rs:432`): sets `paused` true; resume only if not cancelled.
 
@@ -300,16 +307,16 @@ Frontend `cancelTransfer` (`+page.svelte:242`) shows `Cancelling…` but leaves 
 
 ## 11. Safety & Reliability
 
-| Guard | Where | Effect |
-|---|---|---|
-| Long paths | `to_long_path` `lib.rs:216` | `\\?\C:\` or `\\?\UNC\` if >240 chars |
-| Symlink cycles | `walk_dir` + `split_dir` skip `is_symlink` | Never follow junctions |
-| Junction copy loops | `/XJ /XJD` | Robocopy skips them too |
-| Fat32 4 GiB | `is_fat32_volume` + `max_file_size` | Block with pretty bytes |
-| Disk full | `free_bytes_available` `GetDiskFreeSpaceExW` | Block `need +100 MB` headroom |
-| Network offline | `check_network_dest` | Block with share path |
-| Concurrent mirror delete | hard gate single-process for `sync` | No clobber |
-| Inaccurate throttle cap | hard gate single-process for `throttle` | `/IPG` stays true |
+| Guard                    | Where                                        | Effect                                |
+| ------------------------ | -------------------------------------------- | ------------------------------------- |
+| Long paths               | `to_long_path` `lib.rs:216`                  | `\\?\C:\` or `\\?\UNC\` if >240 chars |
+| Symlink cycles           | `walk_dir` + `split_dir` skip `is_symlink`   | Never follow junctions                |
+| Junction copy loops      | `/XJ /XJD`                                   | Robocopy skips them too               |
+| Fat32 4 GiB              | `is_fat32_volume` + `max_file_size`          | Block with pretty bytes               |
+| Disk full                | `free_bytes_available` `GetDiskFreeSpaceExW` | Block `need +100 MB` headroom         |
+| Network offline          | `check_network_dest`                         | Block with share path                 |
+| Concurrent mirror delete | hard gate single-process for `sync`          | No clobber                            |
+| Inaccurate throttle cap  | hard gate single-process for `throttle`      | `/IPG` stays true                     |
 
 Logging: `log_event` (`lib.rs:261`) appends `[epoch] msg` to `%TEMP%\warp.log` for post-mortem.
 
@@ -328,7 +335,7 @@ Error surfacing: `robocopy_exit_message` (`lib.rs:505`) decodes bitmask; per-fil
 
 ## 13. Known Limitations (v1.2.2)
 
-*from `README.md:264` verbatim:*
+_from `README.md:264` verbatim:_
 
 - Windows only (robocopy).
 - No admin elevation → `Program Files` fails.
@@ -341,6 +348,7 @@ Error surfacing: `robocopy_exit_message` (`lib.rs:505`) decodes bitmask; per-fil
 - Log at `%TEMP%\warp.log`.
 
 Additional notes:
+
 - Drift between scan and copy (files created during copy) is auto-corrected by expanding `total_bytes`.
 
 ---
@@ -381,4 +389,4 @@ Tauri, Svelte, Robocopy, `windows` crate (`0.58`), `minisign-verify`.
 
 ---
 
-*Warp wraps what Windows already does best, and gets out of the way. — If you found this useful, star the repo and share a transfer screenshot.*
+_Warp wraps what Windows already does best, and gets out of the way. — If you found this useful, star the repo and share a transfer screenshot._

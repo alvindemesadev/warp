@@ -1,5 +1,6 @@
 // Pure display helpers shared by the UI. Kept free of any Svelte/Tauri imports
 // so they can be unit-tested in isolation (see format.test.ts).
+// Parity: `fmtBytes` <-> Rust `fmt_bytes_pretty` (src-tauri/src/lib.rs:459) and `fmt_speed` (lib.rs:452) — keep units/rounding in sync.
 
 /** Last path segment, handling both `\` (Windows) and `/` separators. */
 export function basename(p: string): string {
@@ -19,7 +20,7 @@ export function fmtFiles(n: number): string {
   return n === 1 ? "1 file" : `${n.toLocaleString()} files`;
 }
 
-/** Millisecond duration → "320ms", "4.5s", "3m 12s". */
+/** Millisecond duration -> "320ms", "4.5s", "3m 12s". */
 export function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const s = ms / 1000;
@@ -27,7 +28,7 @@ export function fmtDuration(ms: number): string {
   return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }
 
-/** Seconds remaining → "", "45s left", "12m 5s left", "2h 10m left". */
+/** Seconds remaining -> "", "45s left", "12m 5s left", "2h 10m left". */
 export function fmtEta(secs: number): string {
   if (secs <= 0) return "";
   if (secs < 60) return `${secs}s left`;
@@ -35,7 +36,7 @@ export function fmtEta(secs: number): string {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m left`;
 }
 
-/** Timestamp → "just now", "5m ago", "3h ago", "2d ago". */
+/** Timestamp -> "just now", "5m ago", "3h ago", "2d ago". */
 export function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 60_000) return "just now";

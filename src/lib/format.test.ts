@@ -11,6 +11,11 @@ describe("basename", () => {
     expect(basename("C:\\folder\\")).toBe("folder");
     expect(basename("single")).toBe("single");
   });
+
+  it("handles long-path prefix", () => {
+    expect(basename("\\\\?\\C:\\very\\long\\file.txt")).toBe("file.txt");
+    expect(basename("\\\\?\\UNC\\server\\share\\a.txt")).toBe("a.txt");
+  });
 });
 
 describe("fmtBytes", () => {
@@ -19,6 +24,14 @@ describe("fmtBytes", () => {
     expect(fmtBytes(2048)).toBe("2 KB");
     expect(fmtBytes(5 * 1_048_576)).toBe("5.0 MB");
     expect(fmtBytes(3 * 1_073_741_824)).toBe("3.0 GB");
+  });
+
+  it("handles boundaries", () => {
+    expect(fmtBytes(0)).toBe("0 B");
+    expect(fmtBytes(1023)).toBe("1023 B");
+    expect(fmtBytes(1024)).toBe("1 KB");
+    expect(fmtBytes(1_073_741_823)).toBe("1024.0 MB");
+    expect(fmtBytes(1_073_741_824)).toBe("1.0 GB");
   });
 });
 
@@ -39,6 +52,11 @@ describe("fmtDuration", () => {
     expect(fmtDuration(4500)).toBe("4.5s");
     expect(fmtDuration(192_000)).toBe("3m 12s");
   });
+
+  it("handles 60s exact and large", () => {
+    expect(fmtDuration(60_000)).toBe("1m 0s");
+    expect(fmtDuration(3_600_000)).toBe("60m 0s");
+  });
 });
 
 describe("fmtEta", () => {
@@ -51,6 +69,12 @@ describe("fmtEta", () => {
     expect(fmtEta(45)).toBe("45s left");
     expect(fmtEta(725)).toBe("12m 5s left");
     expect(fmtEta(7800)).toBe("2h 10m left");
+  });
+
+  it("handles 3599/3600 boundaries", () => {
+    expect(fmtEta(3599)).toBe("59m 59s left");
+    expect(fmtEta(3600)).toBe("1h 0m left");
+    expect(fmtEta(3601)).toBe("1h 0m left");
   });
 });
 

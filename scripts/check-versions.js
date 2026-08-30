@@ -55,17 +55,23 @@ function check(file, expected, label) {
 console.log(`Checking version consistency (source: tauri.conf.json ${version})`);
 check("src-tauri/Cargo.toml", version, "Cargo.toml");
 check("package.json", version, "package.json");
-check("src/routes/+page.svelte", version, "fallback literal");
+check("src/lib/stores/updater.svelte.ts", version, "fallback literal");
+check("docs/WHITEPAPER.md", version, "whitepaper");
+check("docs/ARCHITECTURE.md", version, "architecture");
 if (fs.existsSync(path.join(SITE, "package.json"))) {
   check("warp-site/package.json", version, "warp-site");
 }
 if (fs.existsSync(path.join(ROOT, "latest.json"))) {
   try {
     const lj = readJson(path.join(ROOT, "latest.json"));
-    const sigExists = fs.existsSync(path.join(ROOT, `src-tauri/target/release/bundle/nsis/Warp_${version}_x64-setup.exe.sig`));
+    const sigExists = fs.existsSync(
+      path.join(ROOT, `src-tauri/target/release/bundle/nsis/Warp_${version}_x64-setup.exe.sig`),
+    );
     if (lj.version !== version) {
       if (!sigExists) {
-        console.warn(`  ! latest.json — expected ${version}, found ${lj.version} (stale, no .sig — run build:win to regenerate)`);
+        console.warn(
+          `  ! latest.json — expected ${version}, found ${lj.version} (stale, no .sig — run build:win to regenerate)`,
+        );
       } else {
         console.error(`  ✖ latest.json — expected ${version}, found ${lj.version}`);
         failed = true;

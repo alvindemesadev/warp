@@ -29,6 +29,12 @@ warp-site/
 # Local session tooling (never commit)
 .freebuff/
 
+# Coverage & E2E (never commit)
+coverage/
+test-results/
+playwright-report/
+playwright/.cache/
+
 
 # Site preview build output (unused; sites use static screenshots)
 site-preview-dist/

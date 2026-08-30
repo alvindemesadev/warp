@@ -1,3 +1,15 @@
 {
-  "svelte.enable-ts-plugin": true
+  "svelte.enable-ts-plugin": true,
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "eslint.enable": true,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  }
 }

@@ -24,7 +24,7 @@ pub struct Shard {
     pub dst: String,
     pub est_bytes: u64,
     pub est_files: u64,
-    /// true → copy only files directly inside `src` (`/LEV:1`), not subdirs.
+    /// true -> copy only files directly inside `src` (`/LEV:1`), not subdirs.
     pub root_only: bool,
 }
 
@@ -55,7 +55,7 @@ fn split_dir(
 ) {
     let listing = list_children(src_dir);
 
-    // Loose files at this level → one root-only shard (/LEV:1).
+    // Loose files at this level -> one root-only shard (/LEV:1).
     if !listing.files.is_empty() {
         let bytes = listing.files.iter().map(|f| f.size).sum();
         *next_id += 1;
@@ -150,11 +150,7 @@ fn has_any_entry(dir: &str) -> bool {
 
 /// Windows-style path join (this app is Windows-targeted; robocopy expects `\`).
 fn join_win(base: &str, name: &str) -> String {
-    format!(
-        "{}\\{}",
-        base.trim_end_matches('\\'),
-        name.trim_end_matches('\\')
-    )
+    format!("{}\\{}", base.trim_end_matches('\\'), name.trim_end_matches('\\'))
 }
 
 /// Cheap gate input: how many subdirectories sit directly under `dir`.
@@ -162,7 +158,7 @@ pub(crate) fn top_level_dir_count(dir: &str) -> usize {
     list_children(dir).dirs.len()
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// — Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

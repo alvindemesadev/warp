@@ -9,9 +9,21 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "strict": true,
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
   },
-  "exclude": ["node_modules", "warp-site", "build", ".svelte-kit", "src-tauri/target"],
+  "exclude": [
+    "node_modules",
+    "warp-site",
+    "build",
+    ".svelte-kit",
+    "src-tauri/target",
+    "vite.config.js",
+    "svelte.config.js",
+    "**/*.svelte.ts",
+    "**/*.svelte.js"
+  ]
   // Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
   // except $lib which is handled by https://svelte.dev/docs/kit/configuration#files
   //

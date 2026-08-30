@@ -20,8 +20,23 @@ const filtered = lines.filter((l) => {
   return true;
 });
 
-// Heuristic: svelte-check prints "found X errors" — if we filtered the only error, treat as success
-const hasRealError = filtered.some((l) => l.includes("found") && l.includes("errors") && !l.includes("0 errors"));
+// Heuristic: svelte-check prints "found X errors and Y warnings" — treat any non-zero as failure.
+// Warp-site noise is filtered above, so only real diagnostics remain.
+let hasRealError = false;
+for (const l of filtered) {
+  const m = l.match(/found\s+(\d+)\s+errors?\s+and\s+(\d+)\s+warnings?/i);
+  if (m) {
+    const errs = parseInt(m[1] ?? "0", 10);
+    const warns = parseInt(m[2] ?? "0", 10);
+    if (errs !== 0 || warns !== 0) hasRealError = true;
+    break;
+  }
+  // Fallback: generic "found X errors" without warnings part
+  if (l.includes("found") && l.includes("errors") && !l.includes("0 errors")) {
+    hasRealError = true;
+    break;
+  }
+}
 const filteredOut = filtered.join("\n");
 process.stdout.write(filteredOut);
 if (hasRealError) process.exit(1);

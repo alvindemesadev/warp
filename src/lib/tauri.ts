@@ -1,21 +1,9 @@
 // Thin wrappers around Tauri invokes — isolates invoke strings and types for testability.
+// Types are canonical in ./types — re-export for backwards compat.
 import { invoke } from "@tauri-apps/api/core";
+import type { PathInfo, WarpSummary } from "./types";
 
-export type PathInfo = { files: number; bytes: number; isFile: boolean; drive: string; removable: boolean };
-
-export type WarpSummary = {
-  totalFiles: number;
-  transferred: number;
-  skipped: number;
-  failed: number;
-  durationMs: number;
-  bytesTransferred: number;
-  cancelled: boolean;
-  errorCode: number;
-  errorMessage: string;
-  verified: boolean;
-  verifyMismatches: number;
-};
+export type { PathInfo, WarpSummary } from "./types";
 
 export async function getPathInfo(path: string): Promise<PathInfo> {
   return invoke<PathInfo>("get_path_info", { path });

@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments, clippy::lines_filter_map_ok)]
 // Parallel transfer pool primitives — everything here is Tauri-free so it can
 // be unit-tested in isolation.
 //
@@ -20,7 +21,7 @@ const LARGE_THRESHOLD: u64 = 10 * 1024 * 1024;
 const EMIT_MIN_INTERVAL_MS: u128 = 150;
 const SPEED_WINDOW_MS: u128 = 400;
 
-// ── Tracker ───────────────────────────────────────────────────────────────────
+// — Tracker -------------------------------------------------------------------
 
 pub(crate) struct PendingLarge {
     size: u64,
@@ -59,7 +60,12 @@ pub(crate) struct Tracker {
 }
 
 impl Tracker {
-    pub(crate) fn new(total_bytes: u64, files_total_scan: u32, indeterminate: bool, defer_large: bool) -> Self {
+    pub(crate) fn new(
+        total_bytes: u64,
+        files_total_scan: u32,
+        indeterminate: bool,
+        defer_large: bool,
+    ) -> Self {
         Self {
             total_bytes,
             files_total_scan,
@@ -128,7 +134,8 @@ impl Tracker {
 
     fn maybe_emit(&mut self, name: String, pct: u32, now: Instant) -> Option<WarpProgress> {
         if pct != self.last_emitted_pct
-            || now.saturating_duration_since(self.last_emit_time).as_millis() >= EMIT_MIN_INTERVAL_MS
+            || now.saturating_duration_since(self.last_emit_time).as_millis()
+                >= EMIT_MIN_INTERVAL_MS
         {
             self.last_emitted_pct = pct;
             self.last_emit_time = now;
@@ -175,7 +182,8 @@ impl Tracker {
                     && !self.indeterminate
                     && *size >= self.large_threshold;
                 if is_deferred {
-                    self.pending_large = Some(PendingLarge { size: *size, name: name.clone(), credited: 0 });
+                    self.pending_large =
+                        Some(PendingLarge { size: *size, name: name.clone(), credited: 0 });
                     let pct = self.current_pct();
                     return self.maybe_emit(name.clone(), pct, now);
                 }
@@ -189,7 +197,7 @@ impl Tracker {
                 if !self.defer_large {
                     return None;
                 }
-                let Some(pend) = self.pending_large.as_mut() else { return None };
+                let pend = self.pending_large.as_mut()?;
                 let p_clamped = p.clamp(0.0, 100.0);
                 let want = (pend.size as f64 * p_clamped / 100.0) as u64;
                 if want <= pend.credited {
@@ -234,7 +242,7 @@ impl Tracker {
     }
 }
 
-// ── Shard execution primitives ──────────────────────────────────────────────
+// — Shard execution primitives ----------------------------------------------
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocalCounters {
@@ -257,7 +265,12 @@ pub(crate) struct ShardOutcome {
 }
 
 impl ShardOutcome {
-    pub(crate) fn from_local(id: u64, l: &LocalCounters, exit_code: i32, had_exit_code: bool) -> Self {
+    pub(crate) fn from_local(
+        id: u64,
+        l: &LocalCounters,
+        exit_code: i32,
+        had_exit_code: bool,
+    ) -> Self {
         Self {
             id,
             transferred: l.transferred,
@@ -272,6 +285,7 @@ impl ShardOutcome {
 
 /// Robocopy arguments for one shard. Mirrors the sequential flag set minus
 /// mode/throttle branches the coordinator handles explicitly (`/MOVE`, `/LEV:1`).
+#[allow(dead_code)]
 pub(crate) fn shard_args(
     src: &str,
     dst: &str,
@@ -279,6 +293,18 @@ pub(crate) fn shard_args(
     root_only: bool,
     move_mode: bool,
     mt: u32,
+) -> Vec<String> {
+    shard_args_with_filter(src, dst, skip_conflict, root_only, move_mode, mt, None)
+}
+
+pub(crate) fn shard_args_with_filter(
+    src: &str,
+    dst: &str,
+    skip_conflict: bool,
+    root_only: bool,
+    move_mode: bool,
+    mt: u32,
+    filter: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![src.to_string(), dst.to_string()];
     if move_mode {
@@ -304,6 +330,21 @@ pub(crate) fn shard_args(
     if root_only {
         args.push("/LEV:1".to_string());
     }
+    if let Some(f) = filter {
+        for pat in f.split([';', ',', ' ']) {
+            let t = pat.trim();
+            if t.is_empty() || t.len() > 100 || t.contains("..") || t.contains('\\') {
+                continue;
+            }
+            if args.len() > 60 {
+                break;
+            }
+            args.push("/XF".to_string());
+            args.push(t.to_string());
+            args.push("/XD".to_string());
+            args.push(t.to_string());
+        }
+    }
     args.push(format!("/MT:{mt}"));
     args
 }
@@ -311,17 +352,19 @@ pub(crate) fn shard_args(
 /// Worker-count policy. `requested` comes from the UI: 0 = Auto, 2..=8 explicit.
 ///
 /// Hard gates first (correctness/accuracy over speed):
-///   - sync (`/MIR`) stays single-process — concurrent mirrors could delete
-///     another worker's destination subtree mid-write
 ///   - throttled transfers stay single-process — `/IPG` caps are per-process
 ///     and splitting them would make the cap inaccurate
+///   - sync now uses two-phase parallel (phase 1: delete *EXTRA in parallel,
+///     phase 2: copy in parallel, strictly sequential — 8 delete -> 8 copy,
+///     never 4+4). Shard disjointness guarantees no cross-worker clobber.
+///     Throttle still gates sync to single.
 ///
 /// Explicit requests bypass the job-size heuristics (the user decided) but
 /// never the hard gates. Auto applies medium caps: USB 2, network 3, local
 /// clamp 2..=6 (never assume more threads = faster).
 pub(crate) fn resolve_workers_for(
     requested: u8,
-    mode: &str,
+    _mode: &str,
     throttle: u32,
     shards: usize,
     total_files: u64,
@@ -329,7 +372,7 @@ pub(crate) fn resolve_workers_for(
     usb: bool,
     network: bool,
 ) -> usize {
-    if mode == "sync" || throttle > 0 || shards < 2 {
+    if throttle > 0 || shards < 2 {
         return 1;
     }
     if requested > 1 {
@@ -343,9 +386,7 @@ pub(crate) fn resolve_workers_for(
     } else if network {
         3
     } else {
-        std::thread::available_parallelism()
-            .map(|n| (n.get() / 2).clamp(2, 6))
-            .unwrap_or(4)
+        std::thread::available_parallelism().map(|n| (n.get() / 2).clamp(2, 6)).unwrap_or(4)
     }
 }
 
@@ -354,7 +395,7 @@ pub(crate) fn recovered_from_retry(prev_failed: u32, new_failed: u32) -> u32 {
     prev_failed.saturating_sub(new_failed)
 }
 
-// ── Stream consumption ────────────────────────────────────────────────────────
+// — Stream consumption --------------------------------------------------------
 
 /// Parse one robocopy child's stdout. Updates the shard-local counters always,
 /// and the shared display tracker when one is attached. Emission callbacks run
@@ -382,7 +423,7 @@ pub(crate) fn consume_stream<R: BufRead>(
                 } else {
                     local.transferred += 1;
                 }
-                // Parallel mode counts every header's bytes immediately —
+                // Parallel mode counts every header's bytes immediately --
                 // counted_bytes therefore equals what the tracker was fed and
                 // is exactly what a retry must revert.
                 local.counted_bytes = local.counted_bytes.saturating_add(size);
@@ -423,7 +464,7 @@ pub(crate) fn consume_stream<R: BufRead>(
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// — Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -431,9 +472,7 @@ mod tests {
     use std::time::Duration;
 
     fn t(offset_ms: u64) -> Instant {
-        Instant::now()
-            .checked_add(Duration::from_millis(offset_ms))
-            .unwrap()
+        Instant::now().checked_add(Duration::from_millis(offset_ms)).unwrap()
     }
 
     fn hdr(size: u64) -> RoboLine {
@@ -448,7 +487,7 @@ mod tests {
         assert_eq!(p.percentage, 60);
         assert_eq!(tr.bytes_done, 600);
         assert_eq!(tr.transferred, 2);
-        // No pct change and <150ms → suppressed.
+        // No pct change and <150ms -> suppressed.
         assert!(tr.ingest(&hdr(1), t(20)).is_none());
     }
 
@@ -456,11 +495,13 @@ mod tests {
     fn same_and_error_rows_still_advance_bytes_like_sequential() {
         let mut tr = Tracker::new(1000, 10, false, false);
         tr.ingest(&hdr(500), t(0));
-        let same = RoboLine::FileHeader { is_same: true, is_error: false, size: 250, name: "s".into() };
+        let same =
+            RoboLine::FileHeader { is_same: true, is_error: false, size: 250, name: "s".into() };
         tr.ingest(&same, t(5)).unwrap();
         assert_eq!(tr.skipped, 1);
         assert_eq!(tr.bytes_done, 750);
-        let err = RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name: "e".into() };
+        let err =
+            RoboLine::FileHeader { is_same: false, is_error: true, size: 0, name: "e".into() };
         tr.ingest(&err, t(10));
         assert_eq!(tr.failed, 1);
     }
@@ -489,7 +530,12 @@ mod tests {
         // state machine is exercised without synthetic gigabyte numbers.
         // (The follow-up 500-byte file then stays under the gate.)
         tr.large_threshold = 1000;
-        let big = RoboLine::FileHeader { is_same: false, is_error: false, size: 1500, name: "big".into() };
+        let big = RoboLine::FileHeader {
+            is_same: false,
+            is_error: false,
+            size: 1500,
+            name: "big".into(),
+        };
         let p0 = tr.ingest(&big, t(0)).unwrap();
         assert_eq!(tr.bytes_done, 0, "deferred: nothing counted yet");
 
@@ -520,7 +566,7 @@ mod tests {
     #[test]
     fn speed_ewma_forms_after_first_window() {
         let mut tr = Tracker::new(u64::MAX / 2, 100, false, false);
-        tr.ingest(&hdr(50_000_000), t(0)); // 50MB instantly → ~huge bps after 400ms window closes
+        tr.ingest(&hdr(50_000_000), t(0)); // 50MB instantly -> ~huge bps after 400ms window closes
         let p = tr.ingest(&hdr(50_000_000), t(450));
         assert!(p.is_some());
         assert!(!tr.last_speed_str.is_empty(), "speed string populated after window");
@@ -532,12 +578,17 @@ mod tests {
         let big_files = 10_000u64;
         let big_bytes = 4u64 * 1024 * 1024 * 1024;
         // Hard gates win regardless of request.
-        assert_eq!(resolve_workers_for(8, "sync", 0, 5, big_files, big_bytes, false, false), 1);
+        // Sync now allows parallel via two-phase delete->copy (throttle still gates).
+        assert_eq!(resolve_workers_for(8, "sync", 0, 5, big_files, big_bytes, false, false), 8);
         assert_eq!(resolve_workers_for(8, "copy", 25, 5, big_files, big_bytes, false, false), 1);
         assert_eq!(resolve_workers_for(8, "copy", 0, 1, big_files, big_bytes, false, false), 1);
         // Explicit request honored on eligible jobs.
         assert_eq!(resolve_workers_for(4, "copy", 0, 5, big_files, big_bytes, false, false), 4);
-        assert_eq!(resolve_workers_for(99, "copy", 0, 5, big_files, big_bytes, false, false), 8, "clamped");
+        assert_eq!(
+            resolve_workers_for(99, "copy", 0, 5, big_files, big_bytes, false, false),
+            8,
+            "clamped"
+        );
         // Auto: medium caps.
         assert_eq!(resolve_workers_for(0, "copy", 0, 5, big_files, big_bytes, true, false), 2);
         assert_eq!(resolve_workers_for(0, "copy", 0, 5, big_files, big_bytes, false, true), 3);
@@ -553,7 +604,19 @@ mod tests {
         let plain = shard_args("C:\\s", "C:\\d", false, false, false, 8);
         assert_eq!(plain[0], "C:\\s");
         assert_eq!(plain[1], "C:\\d");
-        for f in ["/E", "/NP", "/R:3", "/W:5", "/BYTES", "/NJH", "/NJS", "/256", "/XJ", "/XJD", "/COPY:DAT"] {
+        for f in [
+            "/E",
+            "/NP",
+            "/R:3",
+            "/W:5",
+            "/BYTES",
+            "/NJH",
+            "/NJS",
+            "/256",
+            "/XJ",
+            "/XJD",
+            "/COPY:DAT",
+        ] {
             assert!(plain.iter().any(|a| a == f), "missing {f}");
         }
         assert!(plain.iter().any(|a| a == "/MT:8"));

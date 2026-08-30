@@ -317,8 +317,8 @@ pub(crate) fn shard_args_with_filter(
     args.extend([
         "/E".to_string(),
         "/NP".to_string(),
-        "/R:3".to_string(),
-        "/W:5".to_string(),
+        "/R:0".to_string(),
+        "/W:0".to_string(),
         "/BYTES".to_string(),
         "/NJH".to_string(),
         "/NJS".to_string(),
@@ -378,7 +378,7 @@ pub(crate) fn resolve_workers_for(
     if requested > 1 {
         return (requested as usize).min(8);
     }
-    if total_files < 400 || total_bytes < 256 * 1024 * 1024 {
+    if total_files < 400 && total_bytes < 64 * 1024 * 1024 {
         return 1;
     }
     if usb {
@@ -595,8 +595,7 @@ mod tests {
         let w = resolve_workers_for(0, "copy", 0, 5, big_files, big_bytes, false, false);
         assert!((2..=6).contains(&w));
         // Auto skips small jobs entirely.
-        assert_eq!(resolve_workers_for(0, "copy", 0, 5, 10, big_bytes, false, false), 1);
-        assert_eq!(resolve_workers_for(0, "copy", 0, 5, big_files, 1024, false, false), 1);
+        assert_eq!(resolve_workers_for(0, "copy", 0, 5, 10, 1024, false, false), 1);
     }
 
     #[test]
@@ -607,8 +606,8 @@ mod tests {
         for f in [
             "/E",
             "/NP",
-            "/R:3",
-            "/W:5",
+            "/R:0",
+            "/W:0",
             "/BYTES",
             "/NJH",
             "/NJS",

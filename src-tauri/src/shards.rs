@@ -14,8 +14,6 @@
 pub const MAX_SPLIT_DEPTH: u32 = 2;
 /// A child must hold at least this share of TOTAL job bytes to be worth splitting.
 const DOMINANT_PCT: u64 = 40;
-/// Never split below this size — orchestration overhead dominates otherwise.
-const MIN_SPLIT_BYTES: u64 = 512 * 1024 * 1024;
 /// Per-file overhead for cost-balanced sharding (bytes-equivalent). Tuned via bench:
 /// 1000×100KB vs 1×100MB — second is 3-4× slower, so 64KB per file approximates wall.
 const FILE_OVERHEAD: u64 = 64 * 1024;
@@ -103,8 +101,8 @@ fn partition_balanced_from_shards(mut shards: Vec<Shard>, workers: usize) -> Vec
             let total_files: u64 = shards.iter().map(|s| s.est_files).sum();
             let total_bytes: u64 = shards.iter().map(|s| s.est_bytes).sum();
             let avg_file = total_bytes.checked_div(total_files).unwrap_or(0);
-            // Only expand if avg file is not tiny — otherwise sequential is faster for 42k×10KB case
-            if avg_file >= 32 * 1024 || total_bytes >= 1024 * 1024 * 1024 {
+            // Expand single dominant parent when it has multiple children
+            if avg_file >= 16 * 1024 || total_files >= 500 || total_bytes >= 128 * 1024 * 1024 {
                 let mut new_shards = Vec::new();
                 if !listing.files.is_empty() {
                     let bytes = listing.files.iter().map(|f| f.size).sum();
@@ -242,7 +240,7 @@ fn split_dir(
     for child in &listing.dirs {
         let (bytes, files) = crate::dir_stats(&child.path);
         let child_dst = join_win(dst_dir, &child.name);
-        if depth < MAX_SPLIT_DEPTH && should_split(&child.path, bytes, total_bytes) {
+        if depth < MAX_SPLIT_DEPTH && should_split(&child.path, bytes, files, total_bytes) {
             split_dir(&child.path, &child_dst, total_bytes, depth + 1, next_id, out);
         } else {
             *next_id += 1;
@@ -259,13 +257,13 @@ fn split_dir(
     }
 }
 
-/// A child is worth splitting when it dominates the job but has enough
-/// internal structure that splitting actually creates parallelism.
-fn should_split(child_path: &str, child_bytes: u64, total_bytes: u64) -> bool {
-    if child_bytes < MIN_SPLIT_BYTES {
+/// A child is worth splitting when it dominates the job or has high file count.
+fn should_split(child_path: &str, child_bytes: u64, child_files: u64, total_bytes: u64) -> bool {
+    let cost = child_bytes.saturating_add(child_files.saturating_mul(FILE_OVERHEAD));
+    if cost < 64 * 1024 * 1024 && child_files < 500 {
         return false;
     }
-    if total_bytes == 0 || child_bytes * 100 < total_bytes * DOMINANT_PCT {
+    if total_bytes > 0 && child_bytes * 100 < total_bytes * DOMINANT_PCT && child_files < 500 {
         return false;
     }
     list_children(child_path).dirs.len() >= 2

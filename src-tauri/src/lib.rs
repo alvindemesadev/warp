@@ -696,7 +696,7 @@ fn should_attempt_parallel(
     }
     match requested {
         Some(w) if w > 1 => true,
-        _ => total_files >= 400 && total_bytes >= 256 * 1024 * 1024,
+        _ => total_files >= 400 || total_bytes >= 64 * 1024 * 1024,
     }
 }
 

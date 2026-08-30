@@ -104,8 +104,8 @@ pub fn warp_file_op_sync(
     args.extend([
         "/E".to_string(),
         "/NP".to_string(),
-        "/R:1".to_string(),
-        "/W:1".to_string(),
+        "/R:0".to_string(),
+        "/W:0".to_string(),
         "/BYTES".to_string(),
         "/NJH".to_string(),
         "/NJS".to_string(),
@@ -125,7 +125,7 @@ pub fn warp_file_op_sync(
     let is_usb_source = is_path_on_usb(&source);
     let is_usb_dest = is_path_on_usb(&effective_dest);
     let is_usb = is_usb_source || is_usb_dest;
-    let is_large = total_bytes > 1_073_741_824;
+    let is_large = total_bytes > 256 * 1024 * 1024;
 
     if let Some(ipg) = ipg_for_throttle(throttle) {
         if throttle >= 25 {

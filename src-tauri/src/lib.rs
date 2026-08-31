@@ -777,39 +777,55 @@ fn run_transfer(
         }
     }
 
-    let summary = if engine_workers > 1 {
-        transfer_parallel(
-            window,
-            &control,
-            &source,
-            &destination,
-            &effective_dest,
-            &mode,
-            &conflict,
-            throttle,
-            verify,
-            engine_workers,
-            filter,
-            quick_bytes,
-            quick_files,
-        )?
-    } else {
-        engine_seq::warp_file_op_sync(
-            window,
-            &control,
-            source,
-            destination,
-            effective_dest,
-            mode,
-            conflict,
-            throttle,
-            verify,
-            filter,
-            quick_bytes,
-            quick_files as u32,
-            workers,
-        )?
-    };
+    let summary =
+        if engine_workers > 1 && filter.is_none() && mode != "sync" && throttle == 0 && !is_network
+        {
+            engine_native::warp_file_op_native(
+                window,
+                &control,
+                source,
+                destination,
+                effective_dest,
+                mode,
+                conflict,
+                verify,
+                engine_workers,
+                quick_bytes,
+                quick_files as u32,
+            )?
+        } else if engine_workers > 1 {
+            transfer_parallel(
+                window,
+                &control,
+                &source,
+                &destination,
+                &effective_dest,
+                &mode,
+                &conflict,
+                throttle,
+                verify,
+                engine_workers,
+                filter,
+                quick_bytes,
+                quick_files,
+            )?
+        } else {
+            engine_seq::warp_file_op_sync(
+                window,
+                &control,
+                source,
+                destination,
+                effective_dest,
+                mode,
+                conflict,
+                throttle,
+                verify,
+                filter,
+                quick_bytes,
+                quick_files as u32,
+                workers,
+            )?
+        };
 
     control.reset_job(); // leave flags clean for the next job
     Ok(summary)

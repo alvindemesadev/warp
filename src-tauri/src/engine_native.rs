@@ -345,6 +345,204 @@ pub fn run_native_transfer(
     })
 }
 
+/// Orchestrates a high-speed native transfer with live Tauri progress event streaming.
+pub fn warp_file_op_native(
+    window: tauri::Window,
+    control: &crate::TransferControl,
+    source: String,
+    _destination: String,
+    effective_dest: String,
+    mode: String,
+    conflict: String,
+    verify: bool,
+    workers: usize,
+    total_bytes: u64,
+    _total_files: u32,
+) -> Result<crate::WarpSummary, String> {
+    use tauri::Emitter;
+
+    let start = Instant::now();
+    let skip_existing = conflict == "skip";
+    let is_move = mode == "move";
+
+    let src_path = Path::new(&source);
+    let dst_path = Path::new(&effective_dest);
+
+    let use_cow = supports_block_cloning(&effective_dest)
+        && src_path.starts_with(crate::preflight::extract_drive(&effective_dest));
+
+    let file_pairs = precreate_directories(src_path, dst_path)
+        .map_err(|e| format!("Failed to create directories: {e}"))?;
+    let total_discovered = file_pairs.len() as u32;
+
+    let transferred = Arc::new(AtomicU32::new(0));
+    let skipped = Arc::new(AtomicU32::new(0));
+    let failed = Arc::new(AtomicU32::new(0));
+    let bytes_done = Arc::new(AtomicU64::new(0));
+    let last_file = Arc::new(std::sync::Mutex::new(String::new()));
+
+    let num_threads = workers.clamp(2, 16);
+    let chunks: Vec<Vec<(PathBuf, PathBuf)>> =
+        file_pairs.chunks((file_pairs.len() / num_threads).max(1)).map(|c| c.to_vec()).collect();
+
+    let win_progress = window.clone();
+    let b_done_p = Arc::clone(&bytes_done);
+    let t_count_p = Arc::clone(&transferred);
+    let l_file_p = Arc::clone(&last_file);
+    let is_done = Arc::new(AtomicBool::new(false));
+    let is_done_reporter = Arc::clone(&is_done);
+
+    let cancelled_flag = Arc::new(AtomicBool::new(false));
+    let paused_flag = Arc::new(AtomicBool::new(false));
+
+    let reporter = std::thread::spawn(move || {
+        let mut last_emit = Instant::now();
+        let mut last_bytes = 0u64;
+        while !is_done_reporter.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let now = Instant::now();
+            let elapsed_sec = now.duration_since(last_emit).as_secs_f64();
+            let cur_bytes = b_done_p.load(Ordering::Relaxed);
+            let cur_files = t_count_p.load(Ordering::Relaxed);
+            let cur_name = l_file_p.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+            let speed_bps = if elapsed_sec > 0.0 {
+                ((cur_bytes.saturating_sub(last_bytes)) as f64 / elapsed_sec) as u64
+            } else {
+                0
+            };
+            last_bytes = cur_bytes;
+            last_emit = now;
+
+            let pct = if total_bytes > 0 {
+                crate::overall_pct(cur_bytes, total_bytes)
+            } else {
+                crate::overall_pct(cur_files as u64, total_discovered as u64)
+            };
+
+            let _ = win_progress.emit(
+                "warp-progress",
+                crate::WarpProgress {
+                    percentage: pct,
+                    current_file: cur_name,
+                    speed: crate::fmt_speed(speed_bps),
+                    files_done: cur_files,
+                    files_total: total_discovered,
+                    indeterminate: false,
+                    bytes_per_sec: speed_bps,
+                    bytes_done: cur_bytes,
+                    total_bytes,
+                    active_workers: num_threads as u32,
+                    shards_done: 0,
+                    shards_total: 0,
+                },
+            );
+        }
+    });
+
+    let mut handles = Vec::new();
+    for chunk in chunks {
+        let t_count = Arc::clone(&transferred);
+        let s_count = Arc::clone(&skipped);
+        let f_count = Arc::clone(&failed);
+        let b_done = Arc::clone(&bytes_done);
+        let l_file = Arc::clone(&last_file);
+        let c_flag = Arc::clone(&cancelled_flag);
+        let p_flag = Arc::clone(&paused_flag);
+
+        let handle = std::thread::spawn(move || {
+            for (src, dst) in chunk {
+                if c_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                while p_flag.load(Ordering::Relaxed) && !c_flag.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+
+                let fname =
+                    src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if let Ok(mut g) = l_file.try_lock() {
+                    *g = fname;
+                }
+
+                if use_cow {
+                    if let Ok(()) = clone_file_cow(&src, &dst) {
+                        let sz = src.metadata().map(|m| m.len()).unwrap_or(0);
+                        t_count.fetch_add(1, Ordering::Relaxed);
+                        b_done.fetch_add(sz, Ordering::Relaxed);
+                        if is_move {
+                            let _ = fs::remove_file(&src);
+                        }
+                        continue;
+                    }
+                }
+
+                match copy_file_direct(&src, &dst, skip_existing) {
+                    Ok(sz) if sz > 0 => {
+                        t_count.fetch_add(1, Ordering::Relaxed);
+                        b_done.fetch_add(sz, Ordering::Relaxed);
+                        if is_move {
+                            let _ = fs::remove_file(&src);
+                        }
+                    }
+                    Ok(_) => {
+                        s_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        f_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    is_done.store(true, Ordering::Relaxed);
+    let _ = reporter.join();
+
+    if is_move && !control.is_cancelled() {
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    let dur_ms = start.elapsed().as_millis() as u64;
+    let final_transferred = transferred.load(Ordering::Relaxed);
+    let final_skipped = skipped.load(Ordering::Relaxed);
+    let final_failed = failed.load(Ordering::Relaxed);
+    let final_bytes = bytes_done.load(Ordering::Relaxed);
+
+    let is_cancel = control.is_cancelled();
+    let exit_code = if is_cancel {
+        -1
+    } else if final_failed > 0 {
+        8
+    } else if final_transferred > 0 {
+        1
+    } else {
+        0
+    };
+
+    Ok(crate::WarpSummary {
+        total_files: total_discovered,
+        transferred: final_transferred,
+        skipped: final_skipped,
+        failed: final_failed,
+        duration_ms: dur_ms,
+        bytes_transferred: final_bytes,
+        cancelled: is_cancel,
+        error_code: exit_code,
+        error_message: String::new(),
+        verified: verify,
+        verify_mismatches: 0,
+        workers_used: num_threads as u32,
+        retried_ok: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

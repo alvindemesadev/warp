@@ -12,11 +12,11 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-2-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Rust](https://img.shields.io/badge/Rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Version](https://img.shields.io/badge/Version-1.2.4-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
+[![Version](https://img.shields.io/badge/Version-2.0.0-339dff.svg)](https://github.com/alvindemesadev/warp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-30d158.svg)](#license)
 [![CI](https://github.com/alvindemesadev/warp/actions/workflows/ci.yml/badge.svg)](https://github.com/alvindemesadev/warp/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-78%25-30d158.svg)](#testing)
-[![Rust Tests](https://img.shields.io/badge/Rust%20Tests-43%20passed-30d158.svg)](#testing)
+[![Coverage](https://img.shields.io/badge/Coverage-86%25-30d158.svg)](#testing)
+[![Rust Tests](https://img.shields.io/badge/Rust%20Tests-48%20passed-30d158.svg)](#testing)
 
 <p><strong><a href="https://getwarp-app.pages.dev">➡️ Get Warp — getwarp-app.pages.dev</a></strong></p>
 
@@ -29,6 +29,7 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 | Feature                          | Details                                                                                                                                                                                                         |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **3 transfer modes**             | Copy, Move, Sync                                                                                                                                                                                                |
+| **Appearance modal**             | Dark & Light themes (WCAG AAA compliant), customizable UI scale (Normal 1.0x, Medium 1.10x, Large 1.15x)                                                                                                       |
 | **Parallel workers**             | 2–8 balanced lanes (Auto: local `available_parallelism/2` clamp 2–6, network 3, USB 2; Sync two-phase 8 delete → 8 copy, never 4+4; throttled stays single) — cost = bytes + files×64K, flat monster file-chunk |
 | **Pause / Resume**               | Dispatch gate: pause finishes active folders, no new dispatch; resume continues                                                                                                                                 |
 | **Auto-retry**                   | Parallel-only: failed shards re-run sequentially up to twice (revert_bytes); sequential relies on `/R:3 /W:5`                                                                                                   |
@@ -70,10 +71,10 @@ Warp wraps Windows' built-in `robocopy` in a clean, modern interface — giving 
 
 Current release installers (generated locally by `npm run build:win`, not committed to git). Sizes below are read from the real files by `node scripts/readme-download.js` — re-run it after each build to keep them accurate:
 
-| File                            | Size   | Description                     |
-| ------------------------------- | ------ | ------------------------------- |
-| `docs/Warp_1.2.4_x64-setup.exe` | 4.7 MB | Windows installer (recommended) |
-| `docs/Warp_1.2.4_x64_en-US.msi` | 6.3 MB | MSI installer                   |
+| File | Size | Description |
+|---|---|---|
+| `docs/Warp_2.0.0_x64-setup.exe` | 4.8 MB | Windows installer (recommended) |
+| `docs/Warp_2.0.0_x64_en-US.msi` | 6.5 MB | MSI installer |
 
 **Requirements:** Windows 10 or 11 (64-bit). That's it — no additional installs needed. Robocopy is built into Windows.
 
@@ -145,7 +146,7 @@ node scripts/build.js
 Output installer:
 
 ```
-src-tauri/target/release/bundle/nsis/Warp_1.2.4_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Warp_2.0.0_x64-setup.exe
 ```
 
 ### Development (hot reload)
@@ -303,7 +304,7 @@ tag runs `.github/workflows/release.yml` (free on GitHub Actions), which builds
 the installers and publishes a draft GitHub Release:
 
 ```bash
-git tag v1.2.4
+git tag v2.0.0
 git push --tags
 ```
 

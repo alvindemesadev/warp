@@ -255,7 +255,7 @@ if (tableOut.trim()) {
   const readme = read(readmePath);
   // Replace the whole markdown table block (header + separator + rows).
   // README uses CRLF, so match both line-ending styles.
-  const re = /\| File \| Size \| Description \|\r?\n\|[-|]*\|\r?\n(?:\|[^\r\n]*\r?\n)+/;
+  const re = /\| *File *\| *Size *\| *Description *\|\r?\n\|[-| ]*\|\r?\n(?:\|[^\r\n]*\r?\n)+/;
   const header = "| File | Size | Description |\n|---|---|---|\n";
   const body = tableOut
     .split("\n")

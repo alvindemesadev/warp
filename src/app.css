@@ -101,13 +101,13 @@ object {
   /* Segmented Controls */
   --seg-bg: rgba(255, 255, 255, 0.08);
   --seg-hover: rgba(255, 255, 255, 0.12);
-  --seg-active-bg: rgba(255, 255, 255, 0.2);
-  --seg-active-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --seg-active-bg: rgba(255, 255, 255, 0.22);
+  --seg-active-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 
   /* Inputs & Swaps & Modals */
   --input-bg: rgba(0, 0, 0, 0.45);
-  --swap-bg: #161618;
-  --swap-hover: #26262a;
+  --swap-bg: #1c1c20;
+  --swap-hover: #2c2c32;
   --modal-bg: #1c1c1e;
   --modal-border: rgba(255, 255, 255, 0.14);
   --modal-shadow: 0 20px 40px rgba(0, 0, 0, 0.7);
@@ -119,16 +119,16 @@ object {
   --live-file-color: #ffffff;
   --live-file-hover: rgba(255, 255, 255, 0.15);
 
-  /* Text - All tuned for WCAG 2.1 AA (>= 4.5:1 on dark surfaces) */
+  /* Text - All tuned for WCAG 2.1 AAA (>= 7.0:1 on dark surfaces) */
   --text-primary: #ffffff;
-  --text-secondary: #c7c7cd;
-  --text-tertiary: #a1a1a8;
+  --text-secondary: #d1d1d6;
+  --text-tertiary: #a8a8af;
 
   /* Misc */
   --noise-opacity: 0.025;
   --glow-bg: radial-gradient(ellipse, rgba(56, 152, 255, 0.18) 0%, transparent 70%);
-  --disabled-bg: rgba(255, 255, 255, 0.06);
-  --disabled-border: rgba(255, 255, 255, 0.1);
+  --disabled-bg: rgba(255, 255, 255, 0.07);
+  --disabled-border: rgba(255, 255, 255, 0.12);
   --card-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   --scrollbar-thumb: rgba(255, 255, 255, 0.2);
 }
@@ -144,7 +144,7 @@ object {
   --glass-hover: rgba(0, 0, 0, 0.05);
   --glass-active: rgba(0, 0, 0, 0.08);
 
-  /* System accent colors (High contrast >= 4.5:1 on light surfaces & white text) */
+  /* System accent colors (High contrast >= 5.5:1 on light surfaces & white text) */
   --accent: #005fd6; /* Deep Blue, contrast > 5.5:1 with white text & on light bg */
   --accent-hover: #004ea8;
   --green: #147a28; /* Deep Green, contrast > 5.5:1 on light bg */
@@ -179,10 +179,10 @@ object {
   --live-file-color: #111113;
   --live-file-hover: #f5f5f7;
 
-  /* Text - All tuned for WCAG 2.1 AA (>= 4.5:1 on light surfaces) */
+  /* Text - All tuned for WCAG 2.1 AAA (>= 7.0:1 on light surfaces) */
   --text-primary: #111113;
-  --text-secondary: #424246;
-  --text-tertiary: #5c5c62;
+  --text-secondary: #38383c;
+  --text-tertiary: #525258;
 
   /* Misc */
   --noise-opacity: 0.015;

@@ -418,14 +418,21 @@
     border-radius: 50%;
     background: var(--swap-bg);
     border: 1px solid var(--glass-border);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+    box-shadow:
+      0 1px 4px rgba(0, 0, 0, 0.25),
+      0 0 1px rgba(0, 0, 0, 0.2);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: default;
     transition:
       background 0.15s,
-      border-color 0.15s;
+      border-color 0.15s,
+      transform 0.15s;
+  }
+  .swap:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .swap--enabled {
     cursor: pointer;
@@ -433,5 +440,6 @@
   .swap--enabled:hover {
     background: var(--swap-hover);
     border-color: var(--accent);
+    transform: scale(1.1);
   }
 </style>

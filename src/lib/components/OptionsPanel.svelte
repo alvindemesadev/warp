@@ -379,7 +379,7 @@
   }
   .seg-btn:disabled {
     cursor: not-allowed;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     background: transparent;
     box-shadow: none;
   }

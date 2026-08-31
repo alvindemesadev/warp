@@ -448,7 +448,7 @@
   .engage--disabled {
     background: var(--disabled-bg);
     border: 1px solid var(--disabled-border);
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     cursor: not-allowed;
     box-shadow: none;
   }

@@ -34,7 +34,7 @@
     // Access to track
     void ui.theme;
     void ui.scale;
-    ui.applyThemeAndScale();
+    ui.applyThemeAndScale(true);
   });
 
   onMount(() => {
@@ -375,29 +375,31 @@
 
 <style>
   .page {
-    min-height: 100vh;
+    position: fixed;
+    inset: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: safe center;
-    padding: 52px 20px 12px;
+    justify-content: center;
+    padding: 0 16px;
+    margin: 0;
     font-family: var(--font-sf);
     cursor: default;
+    box-sizing: border-box;
   }
   .shell {
     width: 100%;
-    max-width: 500px;
+    max-width: 480px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    flex-shrink: 0;
+    gap: 8px;
   }
   .header {
     text-align: center;
-    margin-bottom: 20px;
+    margin-bottom: 4px;
   }
   .header-title {
-    font-size: 40px;
+    font-size: 34px;
     font-weight: 700;
     letter-spacing: -0.04em;
     color: var(--text-primary);
@@ -407,8 +409,8 @@
     user-select: none;
   }
   .header-sub {
-    margin: 6px 0 0;
-    font-size: 14px;
+    margin: 3px 0 0;
+    font-size: 13px;
     font-weight: 500;
     color: var(--text-secondary);
     letter-spacing: 0.01em;
@@ -440,13 +442,15 @@
   }
   .engage {
     width: 100%;
-    padding: 12px;
+    padding: 13px;
     border-radius: 14px;
     border: none;
     font-size: 14px;
     font-weight: 600;
     letter-spacing: -0.01em;
     transition: all 0.15s;
+    font-family: var(--font-sf);
+    margin-top: 6px;
     outline: none;
   }
   .engage--accent {

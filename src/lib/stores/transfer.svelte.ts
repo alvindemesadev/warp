@@ -20,7 +20,6 @@ import type {
 import {
   getOverlappingPath,
   isCrossDriveMove,
-  isMergeSyncDanger,
   canStartTransfer,
   getStartLabel,
 } from "$lib/services/validation";
@@ -79,7 +78,6 @@ export class TransferStore {
     getOverlappingPath(this.sourcePath, this.destPath, this.folderMode),
   );
   crossDriveMove = $derived.by(() => isCrossDriveMove(this.mode, this.sourceInfo, this.destInfo));
-  mergeSyncDanger = $derived(isMergeSyncDanger(this.mode, this.folderMode));
   canStart = $derived.by(() =>
     canStartTransfer(
       this.sourcePath,

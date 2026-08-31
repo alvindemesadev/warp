@@ -6,8 +6,6 @@ export class UiStore {
   dropConflict = $state(false);
   showRecent = $state(false);
   showAppearance = $state(false);
-  showPresets = $state(false);
-  showPresetModal = $state(false);
   dragTarget = $state<"source" | "dest" | null>(null);
   isDragging = $state(false);
   _pendingDrop = $state("");
@@ -31,8 +29,6 @@ export class UiStore {
     this.dropConflict = false;
     this.showRecent = false;
     this.showAppearance = false;
-    this.showPresets = false;
-    this.showPresetModal = false;
     this.dragTarget = null;
     this.isDragging = false;
     this._pendingDrop = "";
@@ -43,7 +39,7 @@ export class UiStore {
       const t = localStorage.getItem("warp-theme") as "dark" | "light" | null;
       if (t === "dark" || t === "light") this.theme = t;
       const s = parseFloat(localStorage.getItem("warp-scale") ?? "");
-      if (!Number.isNaN(s) && s >= 1.0 && s <= 1.3) this.scale = Math.round(s * 100) / 100;
+      if (!Number.isNaN(s) && s >= 1.0 && s <= 1.15) this.scale = Math.round(s * 100) / 100;
       else this.scale = 1.0;
     } catch {
       this.scale = 1.0;
@@ -60,7 +56,7 @@ export class UiStore {
   }
 
   setScale(v: number) {
-    const clamped = Math.min(1.3, Math.max(1.0, Math.round(v * 100) / 100));
+    const clamped = Math.min(1.15, Math.max(1.0, Math.round(v * 100) / 100));
     this.scale = clamped;
     try {
       localStorage.setItem("warp-scale", String(clamped));
@@ -69,13 +65,13 @@ export class UiStore {
   }
 
   zoomIn() {
-    if (this.scale < 1.14) this.setScale(1.15);
-    else if (this.scale < 1.29) this.setScale(1.3);
+    if (this.scale < 1.05) this.setScale(1.1);
+    else if (this.scale < 1.14) this.setScale(1.15);
   }
 
   zoomOut() {
-    if (this.scale > 1.16) this.setScale(1.15);
-    else if (this.scale > 1.01) this.setScale(1.0);
+    if (this.scale > 1.12) this.setScale(1.1);
+    else if (this.scale > 1.05) this.setScale(1.0);
   }
 
   async resizeWindow() {
@@ -93,6 +89,7 @@ export class UiStore {
     if (typeof document === "undefined") return;
     const root = document.documentElement;
     root.setAttribute("data-theme", this.theme);
+    root.setAttribute("data-scale", String(this.scale));
     // CSS variable and zoom for proportional UI scaling
     root.style.setProperty("--scale", String(this.scale));
     root.style.fontSize = `calc(16px * ${this.scale})`;

@@ -4,13 +4,6 @@ import type { Mode, Conflict } from "./types";
 
 export type { Mode, Conflict };
 
-export const THROTTLE_OPTIONS = [
-  { value: 0, label: "Unlimited" },
-  { value: 100, label: "100 MB/s" },
-  { value: 25, label: "25 MB/s" },
-  { value: 5, label: "5 MB/s" },
-] as const;
-
 /** Parallel worker choices for the segmented control. 0 = Auto. */
 export const WORKER_OPTIONS = [
   { value: 0, label: "Auto", title: "Pick workers from the drive types involved (recommended)" },
@@ -23,11 +16,6 @@ export const WORKER_OPTIONS = [
   { value: 6, label: "6", title: "6 parallel folder workers — maximum parallelism" },
   { value: 8, label: "8", title: "8 parallel folder workers — may contend on slower disks" },
 ] as const;
-
-/** Returns true if throttle value matches a preset option. */
-export function isPresetThrottle(v: number): boolean {
-  return THROTTLE_OPTIONS.some((o) => o.value === v);
-}
 
 /** Clamp custom speed to 1..500, 0 = unlimited. */
 export function normalizeThrottleInput(v: number): number {
@@ -50,12 +38,4 @@ export function isSpecialPath(p: string): string | null {
   if (lower.includes("onedrive")) return "OneDrive path — ensure files are downloaded locally";
   if (p.startsWith("\\\\")) return "Network path — speed may be limited";
   return null;
-}
-
-/** For queue/presets: describe current job config. */
-export function describeJob(mode: Mode, verify: boolean, throttle: number): string {
-  const parts: string[] = [mode];
-  if (verify) parts.push("verify");
-  if (throttle) parts.push(`${throttle} MB/s`);
-  return parts.join(" - ");
 }

@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   getOverlappingPath,
   isCrossDriveMove,
-  isMergeSyncDanger,
   canStartTransfer,
   getStartLabel,
 } from "./validation";
@@ -54,14 +53,6 @@ describe("isCrossDriveMove", () => {
     expect(isCrossDriveMove("move", info("C:"), info("C:"))).toBe(false);
     expect(isCrossDriveMove("move", null, info("D:"))).toBe(false);
     expect(isCrossDriveMove("move", info("C:"), null)).toBe(false);
-  });
-});
-
-describe("isMergeSyncDanger", () => {
-  it("only sync+merge", () => {
-    expect(isMergeSyncDanger("sync", "merge")).toBe(true);
-    expect(isMergeSyncDanger("sync", "into")).toBe(false);
-    expect(isMergeSyncDanger("copy", "merge")).toBe(false);
   });
 });
 

@@ -63,10 +63,10 @@
       <div class="section">
         <span class="section-label">Interface Size</span>
         <div class="seg" role="group" aria-label="Interface scaling size">
-          {#each [{ v: 1.0, label: "Normal" }, { v: 1.15, label: "Medium" }, { v: 1.3, label: "Large" }] as s}
+          {#each [{ v: 1.0, label: "Normal" }, { v: 1.1, label: "Medium" }, { v: 1.15, label: "Large" }] as s}
             <button
               class="seg-btn"
-              class:on={Math.abs(ui.scale - s.v) < 0.04}
+              class:on={Math.abs(ui.scale - s.v) < 0.03}
               onclick={() => ui.setScale(s.v)}
             >
               {s.label}

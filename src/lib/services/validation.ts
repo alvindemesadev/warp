@@ -40,10 +40,6 @@ export function isCrossDriveMove(
   );
 }
 
-export function isMergeSyncDanger(mode: Mode, folderMode: FolderMode): boolean {
-  return mode === "sync" && folderMode === "merge";
-}
-
 export function canStartTransfer(
   sourcePath: string,
   destPath: string,

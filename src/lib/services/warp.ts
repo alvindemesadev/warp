@@ -1,9 +1,5 @@
-// Warp service — thin invoke wrappers + event plumbing.
-// Keeps `+page.svelte` free of `invoke`/`listen` strings.
-
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PathInfo, WarpProgress, WarpSummary } from "$lib/types";
 
 export async function getPathInfo(path: string): Promise<PathInfo> {
@@ -52,8 +48,4 @@ export async function listenWarpError(cb: (msg: string) => void): Promise<WarpEv
 
 export async function listenWarpVerifying(cb: () => void): Promise<WarpEventUnlisten> {
   return listen("warp-verifying", () => cb());
-}
-
-export function getCurrentWindowApi() {
-  return getCurrentWindow();
 }

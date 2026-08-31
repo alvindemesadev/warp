@@ -104,7 +104,7 @@
   }
   .modal-sub {
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 3px 0 0;
   }
   .modal-body {

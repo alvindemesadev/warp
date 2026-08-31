@@ -58,7 +58,7 @@
   }
   .sub {
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 0 0 16px;
   }
   .actions {

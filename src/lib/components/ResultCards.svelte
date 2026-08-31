@@ -204,7 +204,7 @@
   }
   .sub {
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 3px 0 0;
   }
   .sub-accent {
@@ -253,19 +253,19 @@
     color: var(--red);
   }
   .stat-value--tertiary {
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
   }
   .stat-label {
     font-size: 9px;
     font-weight: 600;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 4px 0 0;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
   .info-box {
-    background: rgba(10, 132, 255, 0.08);
-    border: 1px solid rgba(10, 132, 255, 0.2);
+    background: rgba(56, 152, 255, 0.12);
+    border: 1px solid rgba(56, 152, 255, 0.28);
     border-radius: 12px;
     padding: 10px 14px;
   }
@@ -276,8 +276,8 @@
     line-height: 1.5;
   }
   .error-box {
-    background: rgba(255, 69, 58, 0.08);
-    border: 1px solid rgba(255, 69, 58, 0.2);
+    background: rgba(255, 84, 73, 0.12);
+    border: 1px solid rgba(255, 84, 73, 0.3);
     border-radius: 12px;
     padding: 10px 14px;
   }
@@ -291,7 +291,7 @@
   }
   .error-msg {
     font-size: 11px;
-    color: rgba(255, 69, 58, 0.8);
+    color: var(--text-primary);
     margin: 0;
     line-height: 1.5;
   }
@@ -312,7 +312,7 @@
   .path-label {
     font-size: 9px;
     font-weight: 700;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     width: 26px;
@@ -320,14 +320,14 @@
   }
   .path-val {
     font-size: 11px;
-    color: var(--text-secondary);
+    color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .logs {
-    background: rgba(255, 69, 58, 0.05);
-    border: 1px solid rgba(255, 69, 58, 0.15);
+    background: rgba(255, 84, 73, 0.08);
+    border: 1px solid rgba(255, 84, 73, 0.22);
     border-radius: 12px;
     padding: 11px 14px;
   }
@@ -349,15 +349,15 @@
     font-size: 9px;
     font-weight: 600;
     color: var(--red);
-    background: rgba(255, 69, 58, 0.12);
-    border: 1px solid rgba(255, 69, 58, 0.2);
+    background: rgba(255, 84, 73, 0.15);
+    border: 1px solid rgba(255, 84, 73, 0.28);
     border-radius: 5px;
     padding: 2px 6px;
     cursor: pointer;
   }
   .logs-hint {
     font-size: 9px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 6px 0 0;
   }
   .logs-list {
@@ -370,7 +370,7 @@
   .log {
     font-size: 10px;
     font-family: monospace;
-    color: rgba(255, 69, 58, 0.65);
+    color: var(--red);
     margin: 0;
   }
   .btn {

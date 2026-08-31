@@ -397,7 +397,7 @@
     margin: 6px 0 0;
     font-size: 14px;
     font-weight: 500;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     letter-spacing: 0.01em;
   }
   .warn {
@@ -406,12 +406,12 @@
     border-width: 1.5px;
   }
   .warn--orange {
-    background: rgba(255, 159, 10, 0.12);
-    border: 1.5px solid rgba(255, 159, 10, 0.3);
+    background: rgba(255, 170, 43, 0.14);
+    border: 1.5px solid rgba(255, 170, 43, 0.35);
   }
   .warn--red {
-    background: rgba(255, 69, 58, 0.12);
-    border: 1.5px solid rgba(255, 69, 58, 0.35);
+    background: rgba(255, 84, 73, 0.14);
+    border: 1.5px solid rgba(255, 84, 73, 0.38);
   }
   .warn-text {
     font-size: 12px;
@@ -439,7 +439,7 @@
   .engage--accent {
     background: var(--accent);
     color: #fff;
-    box-shadow: 0 2px 20px rgba(10, 132, 255, 0.28);
+    box-shadow: 0 2px 20px rgba(56, 152, 255, 0.28);
     cursor: pointer;
   }
   .engage--accent:hover {
@@ -455,7 +455,7 @@
   .hint {
     text-align: center;
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: -5px 0 0;
   }
   .mono {
@@ -470,7 +470,7 @@
     padding: 4px 12px;
     font-size: 11px;
     font-weight: 600;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     cursor: pointer;
     font-family: var(--font-sf);
     letter-spacing: 0.02em;

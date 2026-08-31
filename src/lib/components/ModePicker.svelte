@@ -73,10 +73,11 @@
     text-align: center;
     font-size: 11px;
     margin: -6px 0 0;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     min-height: 14px;
   }
   .mode-desc--warn {
     color: var(--orange);
+    font-weight: 600;
   }
 </style>

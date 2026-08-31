@@ -158,7 +158,7 @@
   }
   .queue-path {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -174,7 +174,7 @@
     height: 14px;
     border-radius: 50%;
     flex-shrink: 0;
-    border: 2px solid rgba(10, 132, 255, 0.22);
+    border: 2px solid rgba(56, 152, 255, 0.25);
     border-top-color: var(--accent);
     animation: spin-smooth 1.2s linear infinite;
   }
@@ -182,7 +182,7 @@
     flex: 1;
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-secondary);
+    color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -231,19 +231,19 @@
     padding: 2px 7px;
     border-radius: 5px;
     background: var(--seg-bg);
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
   }
   .pool-chip--workers {
-    background: rgba(10, 132, 255, 0.15);
+    background: rgba(56, 152, 255, 0.18);
     color: var(--accent);
   }
   .pool-chip--paused {
-    background: rgba(255, 214, 10, 0.15);
+    background: rgba(255, 214, 10, 0.18);
     color: var(--yellow);
   }
   .meta {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -258,15 +258,15 @@
   }
   .pct {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     font-variant-numeric: tabular-nums;
   }
   .cancel {
     font-size: 9px;
     font-weight: 700;
     color: var(--red);
-    background: rgba(255, 69, 58, 0.1);
-    border: 1px solid rgba(255, 69, 58, 0.25);
+    background: rgba(255, 84, 73, 0.12);
+    border: 1px solid rgba(255, 84, 73, 0.28);
     border-radius: 5px;
     padding: 2px 7px;
     cursor: pointer;
@@ -274,14 +274,14 @@
     font-family: var(--font-sf);
   }
   .cancel:hover {
-    background: rgba(255, 69, 58, 0.2);
+    background: rgba(255, 84, 73, 0.22);
   }
   .pausebtn {
     font-size: 9px;
     font-weight: 700;
     color: var(--yellow);
-    background: rgba(255, 214, 10, 0.1);
-    border: 1px solid rgba(255, 214, 10, 0.25);
+    background: rgba(255, 214, 10, 0.12);
+    border: 1px solid rgba(255, 214, 10, 0.28);
     border-radius: 5px;
     padding: 2px 7px;
     cursor: pointer;
@@ -289,7 +289,7 @@
     font-family: var(--font-sf);
   }
   .pausebtn:hover {
-    background: rgba(255, 214, 10, 0.2);
+    background: rgba(255, 214, 10, 0.22);
   }
   .live {
     border-top: 1px solid var(--glass-border);
@@ -300,7 +300,7 @@
   .live-title {
     font-size: 10px;
     font-weight: 700;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     margin: 0 0 8px;

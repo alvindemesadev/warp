@@ -78,13 +78,14 @@
   .head-title {
     font-size: 11px;
     font-weight: 700;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     margin: 0;
   }
   .clear {
     font-size: 10px;
+    font-weight: 600;
     color: var(--red);
     background: none;
     border: none;
@@ -123,13 +124,13 @@
   }
   .row-time {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     flex-shrink: 0;
     margin-left: 8px;
   }
   .row-meta {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
   }
   .empty {
     padding: 24px 14px;
@@ -143,7 +144,7 @@
   }
   .empty-sub {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 0;
   }
 </style>

@@ -154,7 +154,7 @@
   }
   .sub {
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 3px 0 0;
   }
   .accent {
@@ -211,7 +211,7 @@
   }
   .dl-label {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 7px 0 0;
     text-align: center;
   }

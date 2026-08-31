@@ -325,7 +325,7 @@
   .label {
     font-size: 9px;
     font-weight: 700;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     letter-spacing: 0.07em;
     text-transform: uppercase;
     margin: 0 0 2px;
@@ -344,7 +344,7 @@
   }
   .meta {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 1px 0 0;
     white-space: nowrap;
     overflow: hidden;
@@ -352,7 +352,7 @@
   }
   .placeholder {
     font-size: 13px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     margin: 0;
   }
   .link {
@@ -367,7 +367,8 @@
     text-underline-offset: 2px;
   }
   .hint {
-    font-size: 9px;
+    font-size: 10px;
+    font-weight: 600;
     color: var(--orange);
     margin: 2px 0 0;
   }

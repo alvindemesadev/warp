@@ -260,7 +260,7 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     padding-left: 3px;
   }
   .seg {
@@ -360,7 +360,7 @@
   }
   .seg-unit {
     font-size: 10px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     padding: 0 4px;
     transition:
       opacity 0.12s,
@@ -391,7 +391,7 @@
   }
   .opt-hint {
     font-size: 9px;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     max-width: 220px;
     line-height: 1.5;
     min-height: 14px;

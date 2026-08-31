@@ -20,6 +20,7 @@
   import DropConflictModal from "$lib/components/DropConflictModal.svelte";
   import UpdateModal from "$lib/components/UpdateModal.svelte";
   import RecentPanel from "$lib/components/RecentPanel.svelte";
+  import AppearanceModal from "$lib/components/AppearanceModal.svelte";
   import PathCard from "$lib/components/PathCard.svelte";
   import ModePicker from "$lib/components/ModePicker.svelte";
   import OptionsPanel from "$lib/components/OptionsPanel.svelte";
@@ -106,6 +107,8 @@
       if (e.key === "Escape") {
         if (transfer.isProcessing) transfer.cancelTransfer();
         else if (transfer.lastSummary) reset();
+        else if (ui.showAppearance) ui.showAppearance = false;
+        else if (ui.showRecent) ui.showRecent = false;
         else if (ui.showSyncWarning) ui.showSyncWarning = false;
         else if (ui.dropConflict) ui.dropConflict = false;
       }
@@ -200,6 +203,9 @@
     onClose={() => (ui.showRecent = false)}
   />
 {/if}
+{#if ui.showAppearance}
+  <AppearanceModal onClose={() => (ui.showAppearance = false)} />
+{/if}
 {#if updater.showUpdateModal && updater.updateInfo}
   <UpdateModal
     version={updater.updateInfo.version}
@@ -218,7 +224,14 @@
   lastSummary={transfer.lastSummary}
   updateState={updater.updateState}
   updateVersion={updater.updateInfo?.version ?? ""}
-  onRecentToggle={() => (ui.showRecent = !ui.showRecent)}
+  onRecentToggle={() => {
+    ui.showRecent = !ui.showRecent;
+    if (ui.showRecent) ui.showAppearance = false;
+  }}
+  onAppearanceToggle={() => {
+    ui.showAppearance = !ui.showAppearance;
+    if (ui.showAppearance) ui.showRecent = false;
+  }}
   onUpdateOpen={() => (updater.showUpdateModal = true)}
 />
 

@@ -9,6 +9,7 @@
     updateState = "idle",
     updateVersion = "",
     onRecentToggle,
+    onAppearanceToggle,
     onUpdateOpen,
   }: {
     recentCount: number;
@@ -17,6 +18,7 @@
     updateState: string;
     updateVersion: string;
     onRecentToggle: () => void;
+    onAppearanceToggle: () => void;
     onUpdateOpen: () => void;
   } = $props();
 
@@ -70,6 +72,14 @@
         class="chip chip--update">⬆ UPDATE</button
       >
     {/if}
+    <button
+      onclick={onAppearanceToggle}
+      title="Appearance settings (Theme and Size)"
+      class="chip chip--appearance"
+      aria-label="Appearance settings"
+    >
+      APPEARANCE
+    </button>
     {#if recentCount > 0 && !isProcessing && !lastSummary}
       <button onclick={onRecentToggle} title="Recent transfers" class="chip chip--recent"
         >RECENT</button
@@ -176,11 +186,13 @@
   .chip--update:hover {
     background: rgba(10, 132, 255, 0.25);
   }
-  .chip--recent {
+  .chip--recent,
+  .chip--appearance {
     background: var(--seg-bg);
     color: var(--text-secondary);
   }
-  .chip--recent:hover {
+  .chip--recent:hover,
+  .chip--appearance:hover {
     background: var(--seg-hover);
     color: var(--text-primary);
   }

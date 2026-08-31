@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Conflict, FolderMode } from "$lib/types";
   import { WORKER_OPTIONS, normalizeThrottleInput } from "$lib/transfer";
-  import { ui } from "$lib/stores/ui.svelte";
   let {
     folderMode = $bindable("into"),
     conflict = $bindable("overwrite"),
@@ -203,30 +202,6 @@
             }}>On</button
           >
         </div>
-      </div>
-    </div>
-  </div>
-  <div class="opts-row">
-    <div class="opt-group">
-      <span class="opt-label">Theme</span>
-      <div class="seg" role="group" aria-label="Theme">
-        {#each [{ id: "dark" as const, label: "Dark" }, { id: "light" as const, label: "Light" }] as t}
-          <button class="seg-btn" class:on={ui.theme === t.id} onclick={() => ui.setTheme(t.id)}
-            >{t.label}</button
-          >
-        {/each}
-      </div>
-    </div>
-    <div class="opt-group">
-      <span class="opt-label">Size</span>
-      <div class="seg" role="group" aria-label="UI Scale">
-        {#each [{ v: 1.0, label: "Normal" }, { v: 1.15, label: "Medium" }, { v: 1.3, label: "Large" }] as s}
-          <button
-            class="seg-btn"
-            class:on={Math.abs(ui.scale - s.v) < 0.04}
-            onclick={() => ui.setScale(s.v)}>{s.label}</button
-          >
-        {/each}
       </div>
     </div>
   </div>

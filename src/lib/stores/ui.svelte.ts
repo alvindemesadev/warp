@@ -5,6 +5,7 @@ export class UiStore {
   showSyncWarning = $state(false);
   dropConflict = $state(false);
   showRecent = $state(false);
+  showAppearance = $state(false);
   showPresets = $state(false);
   showPresetModal = $state(false);
   dragTarget = $state<"source" | "dest" | null>(null);
@@ -29,6 +30,7 @@ export class UiStore {
     this.showSyncWarning = false;
     this.dropConflict = false;
     this.showRecent = false;
+    this.showAppearance = false;
     this.showPresets = false;
     this.showPresetModal = false;
     this.dragTarget = null;

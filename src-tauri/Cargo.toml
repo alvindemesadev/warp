@@ -31,7 +31,7 @@ windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_Sys
 minisign-verify = "0.2"
 base64 = "0.22"
 proptest = "1.7"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "scan"
